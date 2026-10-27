@@ -190,7 +190,7 @@ function assessTextQuality(pages: IPaperPage[]): TextQuality {
  * 解析PDF文件，提取文本内容
  */
 export async function parsePdfFile(
-  file: File,
+  file: Blob,
   onProgress?: (progress: number) => void,
 ): Promise<IPdfParseResult> {
   const arrayBuffer = await file.arrayBuffer();

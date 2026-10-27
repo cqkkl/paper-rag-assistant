@@ -128,6 +128,7 @@ export function BilingualReaderTab() {
   const translationPreviewRef = useRef<HTMLDivElement>(null);
   const synchronizing = useRef(false);
   const autoRequested = useRef(new Set<string>());
+  const layoutUpgradeRequested = useRef<string | null>(null);
   const pages = useMemo(() => activePaper?.pages ?? [], [activePaper?.pages]);
   const pageNumber = Math.min(Math.max(previewPage, 1), Math.max(1, pages.length));
   const currentPage = pages.find((page) => page.pageNumber === pageNumber) ?? pages[pageNumber - 1];
@@ -144,6 +145,7 @@ export function BilingualReaderTab() {
   const [translation, setTranslation] = useState(activePaper?.translations?.[pageNumber] ?? "");
   const [translationDirty, setTranslationDirty] = useState(false);
   const [translating, setTranslating] = useState(false);
+  const [layoutUpgrading, setLayoutUpgrading] = useState(false);
   const [translationEditing, setTranslationEditing] = useState(false);
   const [sourceView, setSourceView] = useState<SourceView>(() => readTextPreference("source-view", ["layout", "page"] as const, "layout"));
   const [syncScroll, setSyncScroll] = useState(() => readPreference("sync-scroll", true));
@@ -155,6 +157,43 @@ export function BilingualReaderTab() {
       .sort((a, b) => a.start - b.start),
     [activePaper?.highlights, pageNumber],
   );
+
+  const upgradeStoredLayout = useCallback(async () => {
+    if (!activePaper?.fileBlob || layoutUpgrading) return;
+    setLayoutUpgrading(true);
+    try {
+      const { parsePdfFile } = await import("@/lib/pdfParser");
+      const result = await parsePdfFile(activePaper.fileBlob);
+      const migratedHighlights = (activePaper.highlights ?? []).flatMap((highlight) => {
+        const nextPage = result.pages.find((page) => page.pageNumber === highlight.pageNumber);
+        if (!nextPage) return [];
+        const exactIndex = nextPage.text.indexOf(highlight.text);
+        if (exactIndex < 0) return [];
+        return [{ ...highlight, start: exactIndex, end: exactIndex + highlight.text.length }];
+      });
+      updatePaper(activePaper.id, {
+        textContent: result.text,
+        pageCount: result.pageCount,
+        pages: result.pages,
+        outline: result.outline,
+        textQuality: result.textQuality,
+        highlights: migratedHighlights,
+      });
+      toast.success("旧文献已升级为新版学术排版");
+    } catch (error) {
+      console.error("旧文献排版升级失败:", error);
+      toast.error("旧文献排版升级失败，可重新上传 PDF");
+    } finally {
+      setLayoutUpgrading(false);
+    }
+  }, [activePaper, layoutUpgrading, updatePaper]);
+
+  useEffect(() => {
+    if (!activePaper?.fileBlob || !pages.some((page) => !page.blocks?.length)) return;
+    if (layoutUpgradeRequested.current === activePaper.id) return;
+    layoutUpgradeRequested.current = activePaper.id;
+    void upgradeStoredLayout();
+  }, [activePaper, pages, upgradeStoredLayout]);
 
   useEffect(() => {
     sourceRef.current?.scrollTo({ top: 0 });
@@ -385,7 +424,7 @@ export function BilingualReaderTab() {
             </div>
             {sourceView === "layout" ? (
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-xs text-muted-foreground">已按标题、正文、列表与图表说明重排；鼠标划词即可高亮。</p>
+                <p className="text-xs text-muted-foreground">{layoutUpgrading ? "正在升级旧文献的段落结构…" : "已按标题、正文、列表与图表说明重排；鼠标划词即可高亮。"}</p>
                 <div className="flex items-center gap-1">
                   <Highlighter className="mr-1 h-4 w-4 text-muted-foreground" />
                   {colorButtons.map((item) => (

@@ -11,6 +11,16 @@ export interface IPaperOutlineItem {
 
 export type TextQuality = "good" | "low" | "scanned";
 
+export interface IPaperHighlight {
+  id: string;
+  pageNumber: number;
+  start: number;
+  end: number;
+  text: string;
+  color: "yellow" | "green" | "blue" | "pink";
+  createdAt: number;
+}
+
 // 文献类型定义
 export interface IPaper {
   id: string;
@@ -31,6 +41,8 @@ export interface IPaper {
   notes?: string;
   aiSummary?: string;
   aiExtractedAbstract?: string;
+  translations?: Record<number, string>;
+  highlights?: IPaperHighlight[];
 }
 
 export interface IChatMessage {

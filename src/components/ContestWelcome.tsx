@@ -21,14 +21,14 @@ const highlights = [
   {
     icon: GitCompareArrows,
     title: "跨论文研究",
-    description: "自动提取章节、生成结构化笔记，并对 2–5 篇论文进行横向比较。",
+    description: "分页双语精读、生成结构化笔记，并对 2–5 篇论文进行横向比较。",
   },
 ];
 
 const steps = [
-  { icon: Upload, title: "上传论文", description: "解析页码、章节和正文质量" },
+  { icon: Upload, title: "上传论文", description: "解析分页原文并建立双语精读空间" },
   { icon: MessageSquareQuote, title: "提出问题", description: "检索与问题最相关的原文片段" },
-  { icon: BookOpenCheck, title: "核对证据", description: "点击引用跳回 PDF 对应页面" },
+  { icon: BookOpenCheck, title: "核对证据", description: "点击引用跳到对应双语原文页" },
 ];
 
 export function ContestWelcome({ onUpload }: ContestWelcomeProps) {
@@ -40,7 +40,7 @@ export function ContestWelcome({ onUpload }: ContestWelcomeProps) {
           让每个 AI 结论，都能回到论文原文
         </h2>
         <p className="mx-auto mt-4 max-w-2xl text-sm leading-relaxed text-muted-foreground sm:text-base">
-          文献研读助手将 PDF 解析、检索增强问答、页码引用、章节导读和研究笔记整合为一条可信的阅读流程。
+          文献研读助手将分页双语精读、划词高亮、检索增强问答、页码引用和研究笔记整合为一条可信的阅读流程。
         </p>
         <Button className="mt-6" size="lg" onClick={onUpload}>
           <Upload className="mr-2 h-4 w-4" />上传第一篇论文<ArrowRight className="ml-2 h-4 w-4" />

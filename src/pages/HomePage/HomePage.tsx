@@ -1,15 +1,13 @@
 import { lazy, Suspense } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { FileText, MessageCircle, StickyNote, Sparkles, Languages, BookOpen, ListTree, GitCompareArrows, Loader2, CircleAlert } from "lucide-react";
+import { FileText, MessageCircle, StickyNote, Sparkles, Languages, GitCompareArrows, Loader2, CircleAlert } from "lucide-react";
 import { usePaper } from "@/contexts/PaperContext";
 import { useApiKeyStatus } from "@/hooks/use-api-key-status";
 
 const SummaryTab = lazy(() => import("./tabs/SummaryTab").then((module) => ({ default: module.SummaryTab })));
 const ResearchChatTab = lazy(() => import("./tabs/ResearchChatTab").then((module) => ({ default: module.ResearchChatTab })));
 const ResearchNotesTab = lazy(() => import("./tabs/ResearchNotesTab").then((module) => ({ default: module.ResearchNotesTab })));
-const BilingualTab = lazy(() => import("./tabs/BilingualTab").then((module) => ({ default: module.BilingualTab })));
-const PdfPreviewTab = lazy(() => import("./tabs/PdfPreviewTab").then((module) => ({ default: module.PdfPreviewTab })));
-const OutlineTab = lazy(() => import("./tabs/OutlineTab").then((module) => ({ default: module.OutlineTab })));
+const BilingualReaderTab = lazy(() => import("./tabs/BilingualReaderTab").then((module) => ({ default: module.BilingualReaderTab })));
 const CompareTab = lazy(() => import("./tabs/CompareTab").then((module) => ({ default: module.CompareTab })));
 
 function TabFallback() {
@@ -17,7 +15,7 @@ function TabFallback() {
 }
 
 export default function HomePage() {
-  const { activePaper, activeTab, setActiveTab } = usePaper();
+  const { activePaper, activeTab, previewPage, setActiveTab } = usePaper();
   const apiConfigured = useApiKeyStatus();
   const isParsing = activePaper?.status === "parsing" || activePaper?.status === "uploading";
 
@@ -50,17 +48,9 @@ export default function HomePage() {
               <FileText className="h-4 w-4" />
               智能摘要
             </TabsTrigger>
-            <TabsTrigger value="pdf" className="gap-2">
-              <BookOpen className="h-4 w-4" />
-              原文预览
-            </TabsTrigger>
-            <TabsTrigger value="outline" className="gap-2">
-              <ListTree className="h-4 w-4" />
-              章节导读
-            </TabsTrigger>
-            <TabsTrigger value="bilingual" className="gap-2">
+            <TabsTrigger value="reader" className="gap-2">
               <Languages className="h-4 w-4" />
-              双语对照
+              双语精读
             </TabsTrigger>
             <TabsTrigger value="chat" className="gap-2">
               <MessageCircle className="h-4 w-4" />
@@ -80,14 +70,8 @@ export default function HomePage() {
           <TabsContent value="summary" className="mt-0">
             <Suspense fallback={<TabFallback />}><SummaryTab key={activePaper?.id || "empty"} /></Suspense>
           </TabsContent>
-          <TabsContent value="pdf" className="mt-0 h-full">
-            <Suspense fallback={<TabFallback />}><PdfPreviewTab key={activePaper?.id || "empty"} /></Suspense>
-          </TabsContent>
-          <TabsContent value="outline" className="mt-0">
-            <Suspense fallback={<TabFallback />}><OutlineTab key={activePaper?.id || "empty"} /></Suspense>
-          </TabsContent>
-          <TabsContent value="bilingual" className="mt-0">
-            <Suspense fallback={<TabFallback />}><BilingualTab key={activePaper?.id || "empty"} /></Suspense>
+          <TabsContent value="reader" className="mt-0">
+            <Suspense fallback={<TabFallback />}><BilingualReaderTab key={`${activePaper?.id || "empty"}-${previewPage}`} /></Suspense>
           </TabsContent>
           <TabsContent value="chat" className="mt-0">
             <Suspense fallback={<TabFallback />}><ResearchChatTab key={activePaper?.id || "empty"} /></Suspense>

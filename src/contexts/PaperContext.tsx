@@ -97,7 +97,7 @@ export function PaperProvider({ children }: { children: ReactNode }) {
 
   const openPage = useCallback((pageNumber: number) => {
     setPreviewPage(Math.max(1, pageNumber));
-    setActiveTab("pdf");
+    setActiveTab("reader");
   }, []);
 
   const activePaper = papers.find((p) => p.id === activePaperId) || null;

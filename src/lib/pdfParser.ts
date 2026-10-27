@@ -1,6 +1,6 @@
 import * as pdfjsLib from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-import type { IPaperOutlineItem, IPaperPage, TextQuality } from "./types";
+import type { IPaperOutlineItem, IPaperPage, IPaperTextBlock, PaperBlockKind, TextQuality } from "./types";
 
 // 配置worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
@@ -13,38 +13,137 @@ export interface IPdfParseResult {
   textQuality: TextQuality;
 }
 
-function normalizePageText(content: { items: Array<{ str?: string; hasEOL?: boolean; transform?: number[]; width?: number; height?: number } | object> }): string {
-  const textItems = content.items;
-  let output = "";
-  let previousY: number | null = null;
-  let previousEndX: number | null = null;
-  for (const item of textItems) {
-    if (!("str" in item) || typeof item.str !== "string" || !item.str) continue;
-    const textItem = item as { str: string; hasEOL?: boolean; transform?: number[]; width?: number; height?: number };
-    const x = textItem.transform?.[4];
-    const y = textItem.transform?.[5];
-    const lineChanged = previousY !== null && y !== undefined && Math.abs(y - previousY) > 2.5;
-    if (lineChanged && !output.endsWith("\n")) {
-      output += "\n";
-    } else if (
-      output
-      && !/[\s-]$/.test(output)
-      && x !== undefined
-      && previousEndX !== null
-      && x - previousEndX > Math.max(1.5, (textItem.height ?? 8) * 0.15)
-    ) {
-      output += " ";
-    }
-    output += textItem.str;
-    output += textItem.hasEOL ? "\n" : " ";
-    previousY = y ?? previousY;
-    previousEndX = x !== undefined ? x + (textItem.width ?? 0) : previousEndX;
+interface LayoutItem {
+  str: string;
+  x: number;
+  y: number;
+  width: number;
+  fontSize: number;
+}
+
+interface LayoutLine {
+  text: string;
+  y: number;
+  fontSize: number;
+  gapBefore: number;
+}
+
+function median(values: number[]) {
+  if (!values.length) return 10;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
+}
+
+function shouldInsertSpace(left: string, right: string, gap: number, fontSize: number) {
+  if (!left || !right || /\s$/.test(left) || /^\s/.test(right)) return false;
+  if (/^[,.;:!?，。；：！？、)\]）】]/.test(right)) return false;
+  if (/[（([【]$/.test(left)) return false;
+  if (/\p{Script=Han}$/u.test(left) && /^\p{Script=Han}/u.test(right)) return false;
+  return gap > Math.max(1.2, fontSize * 0.12);
+}
+
+function composeLine(items: LayoutItem[]) {
+  const ordered = [...items].sort((a, b) => a.x - b.x);
+  let text = "";
+  let previousEnd = 0;
+  for (const item of ordered) {
+    const cleaned = item.str.replace(/\s+/g, " ").trim();
+    if (!cleaned) continue;
+    if (shouldInsertSpace(text, cleaned, item.x - previousEnd, item.fontSize)) text += " ";
+    text += cleaned;
+    previousEnd = item.x + item.width;
   }
-  return output
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .replace(/[ \t]{2,}/g, " ")
-    .trim();
+  return text.trim();
+}
+
+function toLayoutLines(content: { items: Array<{ str?: string; transform?: number[]; width?: number; height?: number } | object> }): LayoutLine[] {
+  const items: LayoutItem[] = content.items.flatMap((item) => {
+    if (!("str" in item) || typeof item.str !== "string" || !item.str.trim()) return [];
+    const transform = item.transform;
+    const fontSize = transform ? Math.max(1, Math.hypot(transform[0] ?? 0, transform[1] ?? 0)) : item.height ?? 10;
+    return [{
+      str: item.str,
+      x: transform?.[4] ?? 0,
+      y: transform?.[5] ?? 0,
+      width: item.width ?? 0,
+      fontSize,
+    }];
+  });
+
+  const grouped: Array<{ items: LayoutItem[]; y: number; fontSize: number }> = [];
+  for (const item of items) {
+    const previous = grouped.at(-1);
+    const tolerance = Math.max(3, Math.min(previous?.fontSize ?? item.fontSize, item.fontSize) * 0.38);
+    if (previous && Math.abs(previous.y - item.y) <= tolerance) {
+      previous.items.push(item);
+      previous.y = (previous.y * (previous.items.length - 1) + item.y) / previous.items.length;
+      previous.fontSize = Math.max(previous.fontSize, item.fontSize);
+    } else {
+      grouped.push({ items: [item], y: item.y, fontSize: item.fontSize });
+    }
+  }
+
+  return grouped
+    .map((line, index) => ({
+      text: composeLine(line.items),
+      y: line.y,
+      fontSize: line.fontSize,
+      gapBefore: index === 0 ? 0 : Math.abs(grouped[index - 1].y - line.y),
+    }))
+    .filter((line) => line.text);
+}
+
+function classifyLine(line: LayoutLine, index: number, bodySize: number, pageNumber: number, frontMatter: boolean): PaperBlockKind {
+  const text = line.text.trim();
+  if (/^(?:fig(?:ure)?|table|图|表)\s*[\d一二三四五六七八九十]+[.：:\s]/i.test(text)) return "caption";
+  if (/^(?:abstract|摘要|keywords?|关键词|introduction|related work|method(?:ology)?|experiments?|results?|discussion|conclusion|references|acknowledg(?:e)?ments?)\b[：:]?$/i.test(text)) return "heading";
+  if (/^(?:第[一二三四五六七八九十百]+[章节]|\d+(?:\.\d+){0,3}\s+|[一二三四五六七八九十]+[、.])/.test(text) && text.length < 100) return "heading";
+  if (/^(?:[-•·▪◦]|\d+[.)、]|[（(]?[一二三四五六七八九十]+[）)、.])\s*/.test(text)) return "list";
+  if (line.fontSize >= bodySize * 1.42 && text.length < 180) return index < 8 && pageNumber === 1 ? "title" : "heading";
+  if (pageNumber === 1 && index < 3 && line.fontSize >= bodySize * 1.15 && text.length < 200) return "title";
+  if (frontMatter && pageNumber === 1 && text.length < 240) return "metadata";
+  const mathCharacters = (text.match(/[=<>≤≥±×÷∑∫√≈∞α-ωΑ-Ω^_]/g) ?? []).length;
+  if (mathCharacters >= 3 && mathCharacters / Math.max(text.length, 1) > 0.08) return "equation";
+  return "paragraph";
+}
+
+function joinWrappedLine(left: string, right: string) {
+  if (/[-‐‑]$/.test(left) && /^[a-z]/.test(right)) return `${left.slice(0, -1)}${right}`;
+  if (/\p{Script=Han}$/u.test(left) && /^\p{Script=Han}/u.test(right)) return `${left}${right}`;
+  return `${left} ${right}`;
+}
+
+function buildPageContent(content: { items: Array<{ str?: string; transform?: number[]; width?: number; height?: number } | object> }, pageNumber: number) {
+  const lines = toLayoutLines(content);
+  const bodySize = median(lines.map((line) => line.fontSize).filter((size) => size > 4 && size < 40));
+  const drafts: Array<{ kind: PaperBlockKind; text: string }> = [];
+  let frontMatter = pageNumber === 1;
+
+  for (const [index, line] of lines.entries()) {
+    const detected = classifyLine(line, index, bodySize, pageNumber, frontMatter);
+    if (detected === "heading") frontMatter = false;
+    const previous = drafts.at(-1);
+    const canMerge = previous
+      && previous.kind === detected
+      && (detected === "paragraph" || detected === "metadata")
+      && line.gapBefore < Math.max(bodySize * 1.75, line.fontSize * 1.55);
+    if (canMerge) {
+      previous.text = detected === "metadata"
+        ? `${previous.text}\n${line.text}`
+        : joinWrappedLine(previous.text, line.text);
+    } else {
+      drafts.push({ kind: detected, text: line.text });
+    }
+  }
+
+  let text = "";
+  const blocks: IPaperTextBlock[] = drafts.map((draft, index) => {
+    if (index > 0) text += "\n\n";
+    const start = text.length;
+    text += draft.text;
+    return { id: `block-${pageNumber}-${index}`, kind: draft.kind, text: draft.text, start, end: text.length };
+  });
+  return { text: text.trim(), blocks };
 }
 
 function extractOutline(pages: IPaperPage[]): IPaperOutlineItem[] {
@@ -105,8 +204,9 @@ export async function parsePdfFile(
   for (let i = 1; i <= pageCount; i++) {
     const page = await pdf.getPage(i);
     const textContent = await page.getTextContent();
-    const pageText = normalizePageText(textContent);
-    pages.push({ pageNumber: i, text: pageText });
+    const pageContent = buildPageContent(textContent, i);
+    const pageText = pageContent.text;
+    pages.push({ pageNumber: i, text: pageText, blocks: pageContent.blocks });
     fullText += `\n--- 第 ${i} 页 ---\n${pageText}`;
     onProgress?.(Math.round((i / pageCount) * 100));
   }

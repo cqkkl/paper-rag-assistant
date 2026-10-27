@@ -1,6 +1,17 @@
+export type PaperBlockKind = "title" | "heading" | "paragraph" | "list" | "caption" | "metadata" | "equation";
+
+export interface IPaperTextBlock {
+  id: string;
+  kind: PaperBlockKind;
+  text: string;
+  start: number;
+  end: number;
+}
+
 export interface IPaperPage {
   pageNumber: number;
   text: string;
+  blocks?: IPaperTextBlock[];
 }
 
 export interface IPaperOutlineItem {

@@ -1,12 +1,14 @@
 import { useState } from "react";
-import { FileText, Sparkles, RefreshCw, Loader2, FileSearch, Lightbulb } from "lucide-react";
+import { Sparkles, Loader2, FileSearch, Lightbulb } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { usePaper } from "@/contexts/PaperContext";
 import { callDeepSeek, buildSummaryPrompt } from "@/lib/deepseek";
 import { hasApiKey } from "@/lib/apiKeyStore";
 import { toast } from "sonner";
+import { MarkdownContent } from "@/components/MarkdownContent";
+import { ContestWelcome } from "@/components/ContestWelcome";
 
 // 从论文文本中提取摘要
 function extractAbstract(text: string): string {
@@ -43,34 +45,15 @@ function extractAbstract(text: string): string {
 }
 
 export function SummaryTab() {
-  const { activePaper } = usePaper();
+  const { activePaper, updatePaper } = usePaper();
   const [isGenerating, setIsGenerating] = useState(false);
-  const [aiSummary, setAiSummary] = useState<string>("");
+  const [aiSummary, setAiSummary] = useState<string>(activePaper?.aiSummary ?? "");
   const [activeSubTab, setActiveSubTab] = useState("original");
   const [extractingAbstract, setExtractingAbstract] = useState(false);
-  const [aiExtractedAbstract, setAiExtractedAbstract] = useState("");
+  const [aiExtractedAbstract, setAiExtractedAbstract] = useState(activePaper?.aiExtractedAbstract ?? "");
 
   if (!activePaper) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <Card className="max-w-md text-center">
-          <CardHeader>
-            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-primary/10">
-              <FileText className="h-8 w-8 text-primary" />
-            </div>
-            <CardTitle>智能摘要</CardTitle>
-            <CardDescription>
-              自动提取论文原文摘要，AI 深度解读研究价值
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <p className="text-sm text-muted-foreground">
-              从左侧上传文献后开始
-            </p>
-          </CardContent>
-        </Card>
-      </div>
-    );
+    return <ContestWelcome onUpload={() => document.querySelector<HTMLButtonElement>('[data-upload-trigger="true"]')?.click()} />;
   }
 
   const originalAbstract = activePaper.textContent ? extractAbstract(activePaper.textContent) : "";
@@ -95,9 +78,11 @@ export function SummaryTab() {
           content: `论文开头部分内容：\n\n${activePaper.textContent.slice(0, 5000)}\n\n请提取其中的Abstract摘要部分，翻译成中文，按格式输出。`,
         },
       ];
-      await callDeepSeek(messages, (chunk) => {
+      const fullText = await callDeepSeek(messages, (chunk) => {
         setAiExtractedAbstract((prev) => prev + chunk);
       });
+      setAiExtractedAbstract(fullText);
+      updatePaper(activePaper.id, { aiExtractedAbstract: fullText });
       toast.success("AI 提取摘要完成");
     } catch (error) {
       console.error("提取摘要失败:", error);
@@ -123,10 +108,12 @@ export function SummaryTab() {
     setActiveSubTab("ai");
 
     try {
-      const messages = buildSummaryPrompt(activePaper.textContent);
-      await callDeepSeek(messages, (chunk) => {
+      const messages = buildSummaryPrompt(activePaper);
+      const fullText = await callDeepSeek(messages, (chunk) => {
         setAiSummary((prev) => prev + chunk);
       });
+      setAiSummary(fullText);
+      updatePaper(activePaper.id, { aiSummary: fullText });
       toast.success("AI 深度解读生成完成");
     } catch (error) {
       console.error("生成摘要失败:", error);
@@ -138,7 +125,7 @@ export function SummaryTab() {
 
   return (
     <div className="max-w-3xl mx-auto space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h3 className="text-base font-semibold">{activePaper.name}</h3>
           <p className="text-sm text-muted-foreground">
@@ -169,7 +156,7 @@ export function SummaryTab() {
         </Card>
       ) : (
         <Tabs value={activeSubTab} onValueChange={setActiveSubTab}>
-          <TabsList>
+          <TabsList className="max-w-full overflow-x-auto">
             <TabsTrigger value="original" className="gap-2">
               <FileSearch className="h-4 w-4" />
               原文摘要
@@ -196,12 +183,12 @@ export function SummaryTab() {
                         此摘要由AI从论文中自动提取
                       </p>
                     )}
-                    <p className="text-foreground/90 leading-relaxed whitespace-pre-line">
-                      {displayAbstract}
+                    <div className="text-foreground/90 leading-relaxed whitespace-pre-line">
+                      <MarkdownContent>{displayAbstract}</MarkdownContent>
                       {extractingAbstract && (
                         <span className="inline-block w-2 h-4 bg-primary animate-pulse ml-1" />
                       )}
-                    </p>
+                    </div>
                   </div>
                 ) : (
                   <div className="text-center py-8">
@@ -238,15 +225,13 @@ export function SummaryTab() {
               <CardContent>
                 {isGenerating ? (
                   <div className="min-h-[200px]">
-                    <div className="prose prose-sm max-w-none whitespace-pre-line text-foreground/90 leading-relaxed">
-                      {aiSummary}
+                    <div className="text-foreground/90 leading-relaxed">
+                      <MarkdownContent>{aiSummary}</MarkdownContent>
                       <span className="inline-block w-2 h-4 bg-primary animate-pulse ml-1" />
                     </div>
                   </div>
                 ) : aiSummary ? (
-                  <div className="prose prose-sm max-w-none whitespace-pre-line text-foreground/90 leading-relaxed">
-                    {aiSummary}
-                  </div>
+                  <MarkdownContent className="leading-relaxed">{aiSummary}</MarkdownContent>
                 ) : (
                   <div className="text-center py-8">
                     <Sparkles className="mx-auto h-10 w-10 text-muted-foreground/30 mb-4" />

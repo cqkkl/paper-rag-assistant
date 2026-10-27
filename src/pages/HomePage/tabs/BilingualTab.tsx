@@ -2,7 +2,6 @@ import { useState } from "react";
 import { Languages, Loader2, Copy, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { callDeepSeek } from "@/lib/deepseek";
 import { hasApiKey } from "@/lib/apiKeyStore";
 import { toast } from "sonner";
@@ -67,23 +66,24 @@ export function BilingualTab() {
   return (
     <div className="max-w-5xl mx-auto space-y-6">
       <div className="text-center py-4">
-        <h2 className="text-xl font-bold mb-2">论文段落翻译助手</h2>
+        <h2 className="text-xl font-bold mb-2">论文段落翻译</h2>
         <p className="text-sm text-muted-foreground">
           在「原文预览」里看到不懂的英文段落，复制粘贴到这里，AI马上翻译成中文
         </p>
       </div>
 
-      <div className="grid grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
         {/* 左边：输入 */}
         <div className="space-y-3">
           <div className="flex items-center justify-between">
-            <label className="text-sm font-medium">英文原文</label>
+            <label htmlFor="translation-source" className="text-sm font-medium">英文原文</label>
             <Button variant="ghost" size="sm" onClick={handleClear} className="h-7 text-xs gap-1">
               <Trash2 className="h-3 w-3" />
               清空
             </Button>
           </div>
           <Textarea
+            id="translation-source"
             placeholder="把PDF里看不懂的英文段落复制粘贴到这里..."
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
@@ -94,7 +94,7 @@ export function BilingualTab() {
         {/* 右边：输出 */}
         <div className="space-y-3">
           <div className="flex items-center justify-between">
-            <label className="text-sm font-medium text-accent-foreground">中文翻译</label>
+            <span className="text-sm font-medium text-accent-foreground">中文翻译</span>
             {outputText && (
               <Button variant="ghost" size="sm" onClick={handleCopy} className="h-7 text-xs gap-1">
                 <Copy className="h-3 w-3" />

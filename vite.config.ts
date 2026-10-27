@@ -8,17 +8,24 @@ import tailwindcss from '@tailwindcss/vite';
 // 构建期环境变量（托管构建时由部署链路自动注入；本地开发不需要，缺省回退）：
 //   MIAODA_CLIENT_BASE_PATH     应用路由根目录，如 /app/app_xxx
 //   MIAODA_RESOURCE_CDN_PREFIX  JS/CSS 静态资源 CDN 前缀
-const basePath = process.env.MIAODA_CLIENT_BASE_PATH || '/';
+const githubRepositoryName = process.env.GITHUB_REPOSITORY?.split('/')[1];
+const githubPagesBase = githubRepositoryName
+  ? `/${githubRepositoryName}/`
+  : '/paper-rag-assistant/';
+const isMiaodaBuild = Boolean(
+  process.env.MIAODA_CLIENT_BASE_PATH || process.env.MIAODA_RESOURCE_CDN_PREFIX,
+);
+const basePath = process.env.MIAODA_CLIENT_BASE_PATH || githubPagesBase;
 const cdnPrefix = process.env.MIAODA_RESOURCE_CDN_PREFIX;
 
-// 产物分层：vite 原生产物（dist/client，中间产物，整理后删除）→ 妙搭托管产物结构：
+// 产物分层：保留 Vite 原生产物（dist/client），并生成妙搭托管产物结构：
 //   dist/output/           index.html + public 同源资源 + routes.json（走应用权限校验）
 //   dist/output_resource/  assets JS/CSS（推 CDN，公开）
 function miaodaOutputPlugin(): Plugin {
   return {
     name: 'miaoda-output',
     apply: 'build',
-    // closeBundle 在 vite 全部写盘后执行，此时可安全整理并清理中间产物
+    // closeBundle 在 Vite 全部写盘后执行，生成妙搭所需的分层目录。
     closeBundle() {
       const dist = path.resolve(import.meta.dirname, 'dist');
       const client = path.join(dist, 'client');
@@ -52,8 +59,8 @@ function miaodaOutputPlugin(): Plugin {
         path.join(output, 'routes.json'),
         JSON.stringify(routes, null, 2) + '\n',
       );
-      // 清理中间产物，dist 只保留部署分层
-      fs.rmSync(client, { recursive: true, force: true });
+      // 保留 dist/client，避免 Windows 下构建进程仍占用文件导致删除失败，
+      // 同时方便本地预览和 GitHub Pages 部署。
     },
   };
 }
@@ -100,9 +107,16 @@ function collectRoutePaths(srcDir: string): string[] {
 }
 
 export default defineConfig(({ command }) => ({
-  plugins: [react(), tailwindcss(), miaodaOutputPlugin(), sparkJsonPlugin()],
-  // 生产构建：JS/CSS 引用带 CDN 前缀（无 CDN 时退回 base path）；dev 恒为 /
-  base: command === 'build' ? cdnPrefix || basePath : '/',
+  plugins: [
+    react(),
+    tailwindcss(),
+    ...(isMiaodaBuild ? [miaodaOutputPlugin()] : []),
+    sparkJsonPlugin(),
+  ],
+  // GitHub Pages 默认使用仓库子路径；妙搭构建时使用平台注入的路由/CDN 前缀。
+  base: command === 'build'
+    ? isMiaodaBuild ? cdnPrefix || basePath : githubPagesBase
+    : '/',
   define: {
     // 路由 basename 与资源前缀解耦，单独注入
     'import.meta.env.MIAODA_CLIENT_BASE_PATH': JSON.stringify(basePath),

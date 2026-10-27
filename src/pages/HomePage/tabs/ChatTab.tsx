@@ -1,9 +1,8 @@
 import { useState, useRef, useEffect } from "react";
-import { MessageCircle, Send, Loader2, User, Bot } from "lucide-react";
+import { MessageCircle, Send, User, Bot } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { usePaper } from "@/contexts/PaperContext";
 import { cn } from "@/lib/utils";
 import { callDeepSeek, buildChatPrompt } from "@/lib/deepseek";
@@ -54,7 +53,7 @@ export function ChatTab() {
     }]);
 
     try {
-      const prompt = buildChatPrompt(activePaper.textContent, userMessage.content);
+      const prompt = buildChatPrompt(activePaper, userMessage.content, messages);
       await callDeepSeek(prompt, (chunk) => {
         setMessages((prev) =>
           prev.map((m) =>

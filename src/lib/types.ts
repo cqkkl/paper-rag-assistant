@@ -1,3 +1,16 @@
+export interface IPaperPage {
+  pageNumber: number;
+  text: string;
+}
+
+export interface IPaperOutlineItem {
+  title: string;
+  pageNumber: number;
+  level: number;
+}
+
+export type TextQuality = "good" | "low" | "scanned";
+
 // 文献类型定义
 export interface IPaper {
   id: string;
@@ -5,9 +18,19 @@ export interface IPaper {
   size: number;
   uploadTime: number;
   status: "uploading" | "parsing" | "ready" | "error";
+  progress?: number;
+  errorMessage?: string;
   textContent?: string;
   pageCount?: number;
-  fileUrl?: string; // 用于PDF预览的Blob URL
+  pages?: IPaperPage[];
+  outline?: IPaperOutlineItem[];
+  textQuality?: TextQuality;
+  fileBlob?: Blob;
+  fileUrl?: string;
+  chatMessages?: IChatMessage[];
+  notes?: string;
+  aiSummary?: string;
+  aiExtractedAbstract?: string;
 }
 
 export interface IChatMessage {

@@ -25,7 +25,7 @@ export function NotesTab() {
     setNotes("");
 
     try {
-      const messages = buildNotesPrompt(activePaper.textContent);
+      const messages = buildNotesPrompt(activePaper);
       await callDeepSeek(messages, (chunk) => {
         setNotes((prev) => prev + chunk);
       });

@@ -3,7 +3,7 @@ import { usePaper } from "@/contexts/PaperContext";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 export function PdfPreviewTab() {
-  const { activePaper } = usePaper();
+  const { activePaper, previewPage } = usePaper();
 
   if (!activePaper) {
     return (
@@ -42,9 +42,10 @@ export function PdfPreviewTab() {
   }
 
   return (
-    <div className="w-full" style={{ height: "calc(100vh - 140px)" }}>
+    <div className="h-[calc(100dvh-168px)] min-h-[420px] w-full md:h-[calc(100dvh-176px)]">
       <iframe
-        src={`${activePaper.fileUrl}#toolbar=1&navpanes=1&view=FitH`}
+        key={`${activePaper.id}-${previewPage}`}
+        src={`${activePaper.fileUrl}#page=${previewPage}&toolbar=1&navpanes=1&view=FitH`}
         className="w-full h-full border-0 rounded-lg shadow-sm"
         title={activePaper.name}
       />

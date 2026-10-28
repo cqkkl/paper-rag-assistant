@@ -1,5 +1,6 @@
 import * as pdfjsLib from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import { PAPER_LAYOUT_VERSION } from "./types";
 import type { IPaperOutlineItem, IPaperPage, IPaperTextBlock, PaperBlockKind, TextQuality } from "./types";
 
 // 配置worker
@@ -73,7 +74,12 @@ function toLayoutLines(content: { items: Array<{ str?: string; transform?: numbe
   const grouped: Array<{ items: LayoutItem[]; y: number; fontSize: number }> = [];
   for (const item of items) {
     const previous = grouped.at(-1);
-    const tolerance = Math.max(3, Math.min(previous?.fontSize ?? item.fontSize, item.fontSize) * 0.38);
+    // Superscript author/affiliation markers usually sit 3-5 px above their
+    // name while using a smaller font. Basing the tolerance on the smaller
+    // font split every author and marker into a separate visual line. The
+    // larger font still stays well below normal line spacing, so it safely
+    // joins superscripts without folding neighbouring body lines together.
+    const tolerance = Math.max(3.5, Math.max(previous?.fontSize ?? item.fontSize, item.fontSize) * 0.52);
     if (previous && Math.abs(previous.y - item.y) <= tolerance) {
       previous.items.push(item);
       previous.y = (previous.y * (previous.items.length - 1) + item.y) / previous.items.length;
@@ -93,14 +99,49 @@ function toLayoutLines(content: { items: Array<{ str?: string; transform?: numbe
     .filter((line) => line.text);
 }
 
-function classifyLine(line: LayoutLine, index: number, bodySize: number, pageNumber: number, frontMatter: boolean): PaperBlockKind {
+function compactSpacedHeading(text: string) {
+  const trimmed = text.trim();
+  if (/^(?:[A-Z]\s+){2,}[A-Z]$/i.test(trimmed)) return trimmed.replace(/\s+/g, "");
+  return trimmed;
+}
+
+function isNamedSectionHeading(text: string) {
+  const compact = compactSpacedHeading(text);
+  return /^(?:abstract|摘要|keywords?|关键词|introduction|related\s*work|method(?:ology)?|experiments?|results?|discussion|conclusion|references|acknowledg(?:e)?ments?)[：:]?$/i.test(compact);
+}
+
+function looksLikeAuthorLine(text: string) {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  const namePairs = normalized.match(/\b[A-Z][A-Za-z'’-]+\s+[A-Z][A-Za-z'’-]+\b/g) ?? [];
+  const affiliationMarkers = normalized.match(/\s[a-z](?:\s*,\s*(?:[a-z0-9]|\*{1,2})){1,}/g) ?? [];
+  if (namePairs.length >= 1 && affiliationMarkers.length >= 1) return true;
+  const commaSeparatedNames = normalized
+    .split(",")
+    .filter((part) => /\b[A-Z][A-Za-z'’-]+\s+[A-Z][A-Za-z'’-]+\b/.test(part));
+  return commaSeparatedNames.length >= 2 && !/[.:!?]/.test(normalized);
+}
+
+function classifyLine(
+  line: LayoutLine,
+  index: number,
+  bodySize: number,
+  pageNumber: number,
+  frontMatter: boolean,
+  titleSize: number,
+): PaperBlockKind {
   const text = line.text.trim();
   if (/^(?:fig(?:ure)?|table|图|表)\s*[\d一二三四五六七八九十]+[.：:\s]/i.test(text)) return "caption";
-  if (/^(?:abstract|摘要|keywords?|关键词|introduction|related work|method(?:ology)?|experiments?|results?|discussion|conclusion|references|acknowledg(?:e)?ments?)\b[：:]?$/i.test(text)) return "heading";
+  if (isNamedSectionHeading(text)) return "heading";
   if (/^(?:第[一二三四五六七八九十百]+[章节]|\d+(?:\.\d+){0,3}\s+|[一二三四五六七八九十]+[、.])/.test(text) && text.length < 100) return "heading";
   if (/^(?:[-•·▪◦]|\d+[.)、]|[（(]?[一二三四五六七八九十]+[）)、.])\s*/.test(text)) return "list";
-  if (line.fontSize >= bodySize * 1.42 && text.length < 180) return index < 8 && pageNumber === 1 ? "title" : "heading";
-  if (pageNumber === 1 && index < 3 && line.fontSize >= bodySize * 1.15 && text.length < 200) return "title";
+  if (pageNumber === 1 && frontMatter && looksLikeAuthorLine(text)) return "metadata";
+  const isLikelyTitle = pageNumber === 1
+    && index < 10
+    && text.length < 220
+    && line.fontSize >= bodySize * 1.28
+    && line.fontSize >= titleSize * 0.88;
+  if (isLikelyTitle) return "title";
+  if (!frontMatter && line.fontSize >= bodySize * 1.42 && text.length < 180) return "heading";
   if (frontMatter && pageNumber === 1 && text.length < 240) return "metadata";
   const mathCharacters = (text.match(/[=<>≤≥±×÷∑∫√≈∞α-ωΑ-Ω^_]/g) ?? []).length;
   if (mathCharacters >= 3 && mathCharacters / Math.max(text.length, 1) > 0.08) return "equation";
@@ -116,17 +157,23 @@ function joinWrappedLine(left: string, right: string) {
 function buildPageContent(content: { items: Array<{ str?: string; transform?: number[]; width?: number; height?: number } | object> }, pageNumber: number) {
   const lines = toLayoutLines(content);
   const bodySize = median(lines.map((line) => line.fontSize).filter((size) => size > 4 && size < 40));
+  const titleSize = pageNumber === 1
+    ? Math.max(bodySize, ...lines.slice(0, 12).map((line) => line.fontSize))
+    : bodySize;
   const drafts: Array<{ kind: PaperBlockKind; text: string }> = [];
   let frontMatter = pageNumber === 1;
 
   for (const [index, line] of lines.entries()) {
-    const detected = classifyLine(line, index, bodySize, pageNumber, frontMatter);
+    const detected = classifyLine(line, index, bodySize, pageNumber, frontMatter, titleSize);
     if (detected === "heading") frontMatter = false;
     const previous = drafts.at(-1);
+    const mergeGap = detected === "title"
+      ? Math.max(bodySize * 2.8, line.fontSize * 1.85)
+      : Math.max(bodySize * 1.75, line.fontSize * 1.55);
     const canMerge = previous
       && previous.kind === detected
-      && (detected === "paragraph" || detected === "metadata")
-      && line.gapBefore < Math.max(bodySize * 1.75, line.fontSize * 1.55);
+      && (detected === "paragraph" || detected === "metadata" || detected === "title")
+      && line.gapBefore < mergeGap;
     if (canMerge) {
       previous.text = detected === "metadata"
         ? `${previous.text}\n${line.text}`
@@ -206,7 +253,7 @@ export async function parsePdfFile(
     const textContent = await page.getTextContent();
     const pageContent = buildPageContent(textContent, i);
     const pageText = pageContent.text;
-    pages.push({ pageNumber: i, text: pageText, blocks: pageContent.blocks });
+    pages.push({ pageNumber: i, text: pageText, blocks: pageContent.blocks, layoutVersion: PAPER_LAYOUT_VERSION });
     fullText += `\n--- 第 ${i} 页 ---\n${pageText}`;
     onProgress?.(Math.round((i / pageCount) * 100));
   }

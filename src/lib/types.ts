@@ -1,5 +1,11 @@
 export type PaperBlockKind = "title" | "heading" | "paragraph" | "list" | "caption" | "metadata" | "equation";
 
+/**
+ * Increment when the PDF text-layout heuristics change in a way that should
+ * trigger a one-time reparse for documents already stored in IndexedDB.
+ */
+export const PAPER_LAYOUT_VERSION = 2;
+
 export interface IPaperTextBlock {
   id: string;
   kind: PaperBlockKind;
@@ -12,6 +18,7 @@ export interface IPaperPage {
   pageNumber: number;
   text: string;
   blocks?: IPaperTextBlock[];
+  layoutVersion?: number;
 }
 
 export interface IPaperOutlineItem {

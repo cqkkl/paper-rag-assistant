@@ -12,7 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { usePaper } from "@/contexts/PaperContext";
 import { useApiKeyStatus } from "@/hooks/use-api-key-status";
 import { callDeepSeek } from "@/lib/deepseek";
-import type { IPaperHighlight, IPaperTextBlock, PaperBlockKind } from "@/lib/types";
+import { PAPER_LAYOUT_VERSION, type IPaperHighlight, type IPaperTextBlock, type PaperBlockKind } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
@@ -111,14 +111,97 @@ function inferTextBlocks(text: string, pageNumber: number): IPaperTextBlock[] {
 }
 
 const blockStyles: Record<PaperBlockKind, string> = {
-  title: "block pb-5 pt-1 text-center text-xl font-semibold leading-8 tracking-tight text-foreground",
-  heading: "block mb-3 mt-5 border-l-2 border-primary pl-3 text-base font-semibold leading-7 text-foreground",
-  paragraph: "block mb-4 text-justify text-[15px] leading-8 text-foreground/90",
-  list: "block mb-2 rounded-lg bg-muted/45 px-3 py-2 text-[14px] leading-7 text-foreground/90",
-  caption: "block my-4 rounded-lg border border-dashed bg-muted/30 px-3 py-2 text-center text-xs italic leading-6 text-muted-foreground",
-  metadata: "block mb-5 whitespace-pre-line rounded-xl border bg-muted/25 p-4 text-xs leading-6 text-muted-foreground",
-  equation: "block my-4 overflow-x-auto rounded-lg bg-slate-950 px-4 py-3 text-center font-mono text-xs leading-6 text-slate-100",
+  title: "block mb-5 text-balance text-center text-[clamp(1.3rem,1.8vw,1.65rem)] font-semibold leading-[1.35] tracking-[-0.025em] text-foreground",
+  heading: "block mb-3 mt-8 border-b border-border/70 pb-2 text-[17px] font-semibold leading-7 tracking-[-0.01em] text-foreground",
+  paragraph: "block mb-[1.05em] text-justify text-[15.5px] leading-[1.82] tracking-[0.005em] text-foreground/90",
+  list: "block mb-2 border-l-2 border-primary/35 py-1 pl-4 text-[15px] leading-[1.8] text-foreground/90",
+  caption: "block my-5 border-y border-border/70 bg-muted/20 px-3 py-2.5 text-center text-[12.5px] italic leading-6 text-muted-foreground",
+  metadata: "block mb-3 whitespace-pre-line text-[13px] leading-6 text-muted-foreground",
+  equation: "block my-5 overflow-x-auto border-y border-border/80 bg-muted/25 px-4 py-3 text-center font-mono text-[13px] leading-6 text-foreground/85",
 };
+
+function cleanBlockText(text: string) {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function looksLikeAuthorName(text: string) {
+  const value = cleanBlockText(text)
+    .replace(/^[,，;；·•\s]+/, "")
+    .replace(/(?:\s+|[,，]\s*)[a-z](?:\s*[,，]\s*[a-z])*(?:\s*[,，]\s*\d+)?\s*[,，*]*$/i, "")
+    .trim();
+  if (!value || value.length > 420 || /[：:。.!?？]/.test(value)) return false;
+  const nameMatches = value.match(/\b[A-Z][A-Za-z'’-]+(?:\s+[A-Z][A-Za-z'’-]+){1,2}\b/g) ?? [];
+  const coveredLength = nameMatches.join(" ").length;
+  return nameMatches.length >= 2
+    ? coveredLength >= value.length * 0.22
+    : nameMatches.length === 1 && coveredLength >= value.length * 0.55;
+}
+
+function looksLikeAffiliationMarker(text: string) {
+  return /^[\s,，;；a-z\d*†‡]+$/i.test(text) && /[a-z]/i.test(text) && cleanBlockText(text).length <= 42;
+}
+
+function looksLikeAffiliationText(text: string) {
+  const value = cleanBlockText(text);
+  const markerCount = [...value.matchAll(/(?:^|\s)[a-z](?=\s*[\p{Script=Han}A-Z])/giu)].length;
+  return markerCount >= 1 && /(?:大学|学院|医院|实验室|研究中心|department|university|hospital|institute|laboratory|china|中国)/i.test(value);
+}
+
+function looksLikeSectionHeading(text: string) {
+  const value = cleanBlockText(text);
+  return /^(?:abstract|摘要|keywords?|关键词|introduction|related work|method(?:ology)?|experiments?|results?|discussion|conclusion|references|acknowledg(?:e)?ments?)\b[：:]?/i.test(value)
+    || /^(?:第[一二三四五六七八九十百]+[章节]|\d+(?:\.\d+){0,3}\s+)/.test(value);
+}
+
+function splitAffiliations(text: string) {
+  const value = cleanBlockText(text);
+  const matches = [...value.matchAll(/(?:^|\s)([a-z])\s+(?=[\p{Script=Han}A-Z])/giu)];
+  if (matches.length < 2) return [];
+  return matches.map((match, index) => {
+    const start = (match.index ?? 0) + (match[0].startsWith(" ") ? 1 : 0);
+    const next = matches[index + 1];
+    const end = next ? (next.index ?? value.length) : value.length;
+    return value.slice(start, end).trim().replace(/^([a-z])\s*/i, "**$1**  ");
+  });
+}
+
+function normalizeAcademicMarkdown(markdown: string) {
+  const input = markdown.replace(/\r\n?/g, "\n").trim();
+  if (!input) return input;
+
+  const lines = input.split("\n");
+  const firstContentIndex = lines.findIndex((line) => line.trim());
+  return lines.map((line, index) => {
+    const value = line.trim();
+    if (!value) return "";
+    if (/^(?:#{1,6}\s|[-*+]\s|>\s|\d+\.\s|\|)/.test(value)) return line;
+
+    if (index === firstContentIndex && !looksLikeAuthorName(value) && !looksLikeSectionHeading(value)) {
+      return `# ${value}`;
+    }
+
+    const keywordMatch = value.match(/^(?:文章信息\s*)?(?:关键词|关键字|keywords?)\s*[：:]\s*(.+)$/i);
+    if (keywordMatch) {
+      const keywords = keywordMatch[1]
+        .replace(/[，,、;；]\s*/g, "；")
+        .replace(/(?<=[\p{Script=Han}])\s+(?=[\p{Script=Han}])/gu, "；");
+      return `**关键词｜** ${keywords}`;
+    }
+
+    const abstractMatch = value.match(/^(?:摘要|abstract)\s*[：:]?\s*(.*)$/i);
+    if (abstractMatch) return abstractMatch[1] ? `## 摘要\n\n${abstractMatch[1]}` : "## 摘要";
+
+    if (looksLikeSectionHeading(value) && value.length < 100) return `## ${value}`;
+
+    const affiliations = splitAffiliations(value);
+    if (affiliations.length > 1 && looksLikeAffiliationText(value)) {
+      return `### 作者单位\n\n${affiliations.map((item) => `- ${item}`).join("\n")}`;
+    }
+
+    if (looksLikeAuthorName(value)) return `**作者｜** ${value}`;
+    return line;
+  }).join("\n").replace(/\n{3,}/g, "\n\n");
+}
 
 export function BilingualReaderTab() {
   const { activePaper, previewPage, openPage, updatePaper } = usePaper();
@@ -141,8 +224,29 @@ export function BilingualReaderTab() {
       return { ...block, start, end, text: sourceText.slice(start, end) };
     });
   }, [currentPage, pageNumber, sourceText]);
+  const sourceFrontMatter = useMemo(() => {
+    if (pageNumber !== 1 || sourceBlocks.length < 2) return null;
+    const detectedAuthorIndex = sourceBlocks.findIndex((block, index) => index > 0 && looksLikeAuthorName(block.text));
+    const initialTitleCount = sourceBlocks.findIndex((block) => block.kind !== "title");
+    const titleEndIndex = detectedAuthorIndex > 0
+      ? detectedAuthorIndex
+      : initialTitleCount > 0 ? initialTitleCount : 0;
+    if (titleEndIndex <= 0) return null;
+
+    let bodyStartIndex = sourceBlocks.findIndex((block, index) => {
+      if (index <= titleEndIndex) return false;
+      const value = cleanBlockText(block.text);
+      if (block.kind === "heading" || looksLikeSectionHeading(value)) return true;
+      return block.kind === "paragraph" && value.length > 120 && !looksLikeAffiliationText(value);
+    });
+    if (bodyStartIndex < 0) bodyStartIndex = sourceBlocks.length;
+    return { titleEndIndex, bodyStartIndex };
+  }, [pageNumber, sourceBlocks]);
+  const translationStateKey = `${activePaper?.id ?? "no-paper"}:${pageNumber}`;
+  const savedTranslation = activePaper?.translations?.[pageNumber] ?? "";
+  const [translationPageKey, setTranslationPageKey] = useState(translationStateKey);
   const [highlightColor, setHighlightColor] = useState<HighlightColor>("yellow");
-  const [translation, setTranslation] = useState(activePaper?.translations?.[pageNumber] ?? "");
+  const [translation, setTranslation] = useState(savedTranslation);
   const [translationDirty, setTranslationDirty] = useState(false);
   const [translating, setTranslating] = useState(false);
   const [layoutUpgrading, setLayoutUpgrading] = useState(false);
@@ -150,6 +254,13 @@ export function BilingualReaderTab() {
   const [sourceView, setSourceView] = useState<SourceView>(() => readTextPreference("source-view", ["layout", "page"] as const, "layout"));
   const [syncScroll, setSyncScroll] = useState(() => readPreference("sync-scroll", true));
   const [autoTranslate, setAutoTranslate] = useState(() => readPreference("auto-translate", true));
+  if (translationPageKey !== translationStateKey) {
+    setTranslationPageKey(translationStateKey);
+    setTranslation(savedTranslation);
+    setTranslationDirty(false);
+    setTranslationEditing(false);
+  }
+  const renderedTranslation = useMemo(() => normalizeAcademicMarkdown(translation), [translation]);
 
   const pageHighlights = useMemo(
     () => (activePaper?.highlights ?? [])
@@ -189,7 +300,7 @@ export function BilingualReaderTab() {
   }, [activePaper, layoutUpgrading, updatePaper]);
 
   useEffect(() => {
-    if (!activePaper?.fileBlob || !pages.some((page) => !page.blocks?.length)) return;
+    if (!activePaper?.fileBlob || !pages.some((page) => !page.blocks?.length || page.layoutVersion !== PAPER_LAYOUT_VERSION)) return;
     if (layoutUpgradeRequested.current === activePaper.id) return;
     layoutUpgradeRequested.current = activePaper.id;
     void upgradeStoredLayout();
@@ -199,7 +310,7 @@ export function BilingualReaderTab() {
     sourceRef.current?.scrollTo({ top: 0 });
     translationRef.current?.scrollTo({ top: 0 });
     translationPreviewRef.current?.scrollTo({ top: 0 });
-  }, []);
+  }, [activePaper?.id, pageNumber, sourceView, translationEditing]);
 
   useEffect(() => {
     if (!activePaper || !translationDirty) return;
@@ -282,6 +393,16 @@ export function BilingualReaderTab() {
     );
   }
 
+  const navigateToPage = (nextPage: number) => {
+    if (translationDirty) {
+      updatePaper(activePaper.id, {
+        translations: { ...(activePaper.translations ?? {}), [pageNumber]: translation },
+      });
+      setTranslationDirty(false);
+    }
+    openPage(nextPage);
+  };
+
   const saveHighlights = (highlights: IPaperHighlight[]) => {
     updatePaper(activePaper.id, { highlights });
   };
@@ -355,11 +476,54 @@ export function BilingualReaderTab() {
     return fragments;
   };
 
-  const renderStructuredSource = () => sourceBlocks.map((block) => (
+  const renderSourceBlock = (block: IPaperTextBlock) => (
     <span key={block.id} className={blockStyles[block.kind]} data-block-kind={block.kind}>
       {renderHighlightedRange(block.start, block.end)}
     </span>
-  ));
+  );
+
+  const renderStructuredSource = () => {
+    if (!sourceFrontMatter) return sourceBlocks.map(renderSourceBlock);
+    const { titleEndIndex, bodyStartIndex } = sourceFrontMatter;
+    const titleStart = sourceBlocks[0]?.start ?? 0;
+    const titleEnd = sourceBlocks[titleEndIndex]?.start ?? sourceText.length;
+    const frontMatterBlocks = sourceBlocks.slice(titleEndIndex, bodyStartIndex);
+
+    return (
+      <>
+        <header className="mb-6 border-b border-border/70 pb-6 text-center">
+          <h1 className="mx-auto max-w-[680px] text-balance text-[clamp(1.3rem,1.8vw,1.65rem)] font-semibold leading-[1.35] tracking-[-0.03em] text-foreground">
+            {renderHighlightedRange(titleStart, titleEnd)}
+          </h1>
+          {frontMatterBlocks.length > 0 && (
+            <div className="mx-auto mt-5 flex max-w-[700px] flex-wrap items-baseline justify-center gap-x-1.5 gap-y-2">
+              {frontMatterBlocks.map((block) => {
+                const value = cleanBlockText(block.text);
+                const author = looksLikeAuthorName(value);
+                const marker = looksLikeAffiliationMarker(value);
+                const affiliation = looksLikeAffiliationText(value);
+                return (
+                  <span
+                    key={block.id}
+                    data-block-kind={block.kind}
+                    className={cn(
+                      author && "text-[14.5px] font-semibold leading-6 text-foreground/90",
+                      marker && "relative -top-1 text-[11px] font-medium leading-5 text-primary/75",
+                      affiliation && "basis-full whitespace-pre-line text-[12.5px] leading-[1.7] text-muted-foreground",
+                      !author && !marker && !affiliation && "text-[12.5px] leading-6 text-muted-foreground",
+                    )}
+                  >
+                    {renderHighlightedRange(block.start, block.end)}
+                  </span>
+                );
+              })}
+            </div>
+          )}
+        </header>
+        {sourceBlocks.slice(bodyStartIndex).map(renderSourceBlock)}
+      </>
+    );
+  };
 
   const synchronizeScroll = (source: HTMLElement, target: HTMLElement) => {
     if (!syncScroll || synchronizing.current) return;
@@ -379,10 +543,10 @@ export function BilingualReaderTab() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-card px-3 py-2.5">
         <div className="flex min-w-0 items-center gap-2">
-          <Button size="icon" variant="outline" aria-label="上一页" disabled={pageNumber <= 1} onClick={() => openPage(pageNumber - 1)}><ArrowLeft className="h-4 w-4" /></Button>
+          <Button size="icon" variant="outline" aria-label="上一页" disabled={pageNumber <= 1} onClick={() => navigateToPage(pageNumber - 1)}><ArrowLeft className="h-4 w-4" /></Button>
           <select
             value={pageNumber}
-            onChange={(event) => openPage(Number(event.target.value))}
+            onChange={(event) => navigateToPage(Number(event.target.value))}
             className="h-9 max-w-[260px] rounded-md border bg-background px-3 text-sm"
             aria-label="选择论文页码"
           >
@@ -392,7 +556,7 @@ export function BilingualReaderTab() {
               </option>
             ))}
           </select>
-          <Button size="icon" variant="outline" aria-label="下一页" disabled={pageNumber >= pages.length} onClick={() => openPage(pageNumber + 1)}><ArrowRight className="h-4 w-4" /></Button>
+          <Button size="icon" variant="outline" aria-label="下一页" disabled={pageNumber >= pages.length} onClick={() => navigateToPage(pageNumber + 1)}><ArrowRight className="h-4 w-4" /></Button>
           <span className="hidden text-xs text-muted-foreground sm:inline">共 {pages.length} 页</span>
         </div>
         <div className="flex flex-wrap items-center gap-3 text-xs">
@@ -405,8 +569,8 @@ export function BilingualReaderTab() {
       </div>
 
       <div className="grid gap-4 md:h-[calc(100dvh-230px)] md:min-h-[560px] md:grid-cols-2">
-        <Card className="flex min-h-[520px] min-w-0 flex-col overflow-hidden md:min-h-0">
-          <CardHeader className="space-y-3 border-b py-3">
+        <Card className="flex min-h-[520px] min-w-0 flex-col overflow-hidden border-border/80 bg-card shadow-sm md:min-h-0">
+          <CardHeader className="space-y-3 border-b bg-muted/10 py-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <CardTitle className="flex items-center gap-2 text-base"><BookOpenText className="h-4 w-4 text-primary" />原文 · 第 {pageNumber} 页</CardTitle>
               <div className="flex rounded-lg bg-muted p-0.5 text-xs">
@@ -450,11 +614,13 @@ export function BilingualReaderTab() {
               <div
                 ref={sourceRef}
                 data-source-text="true"
-                className="h-full max-h-[62vh] overflow-y-auto px-5 py-6 selection:bg-primary/20 md:max-h-none sm:px-7"
+                className="h-full max-h-[62vh] overflow-y-auto px-4 py-6 selection:bg-primary/20 md:max-h-none sm:px-6 lg:px-8"
                 onMouseUp={addSelectionHighlight}
                 onScroll={(event) => { const target = translationScroller(); if (target) synchronizeScroll(event.currentTarget, target); }}
               >
-                {sourceText ? renderStructuredSource() : <span className="text-muted-foreground">此页未提取到可阅读文本，请切换“原始版面”查看页面图像。</span>}
+                <article className="mx-auto max-w-[740px]">
+                  {sourceText ? renderStructuredSource() : <span className="text-muted-foreground">此页未提取到可阅读文本，请切换“原始版面”查看页面图像。</span>}
+                </article>
               </div>
             ) : activePaper.fileBlob ? (
               <div ref={sourceRef} className="h-full max-h-[62vh] overflow-y-auto md:max-h-none" onScroll={(event) => { const target = translationScroller(); if (target) synchronizeScroll(event.currentTarget, target); }}>
@@ -468,8 +634,8 @@ export function BilingualReaderTab() {
           </CardContent>
         </Card>
 
-        <Card className="flex min-h-[520px] min-w-0 flex-col overflow-hidden md:min-h-0">
-          <CardHeader className="border-b py-3">
+        <Card className="flex min-h-[520px] min-w-0 flex-col overflow-hidden border-border/80 bg-card shadow-sm md:min-h-0">
+          <CardHeader className="border-b bg-muted/10 py-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <CardTitle className="flex items-center gap-2 text-base"><Languages className="h-4 w-4 text-primary" />译文 · 第 {pageNumber} 页</CardTitle>
@@ -505,14 +671,14 @@ export function BilingualReaderTab() {
                 disabled={translating}
                 spellCheck={false}
                 placeholder="在这里修改译文或 Markdown 排版…"
-                className="h-full min-h-[460px] resize-none rounded-none border-0 bg-muted/10 p-5 font-mono text-sm leading-7 shadow-none focus-visible:ring-0 md:min-h-0 sm:p-7"
+                className="mx-auto h-full min-h-[460px] max-w-[740px] resize-none rounded-none border-0 bg-card px-4 py-6 font-sans text-[15.5px] leading-[1.8] shadow-none focus-visible:ring-0 md:min-h-0 sm:px-8"
                 aria-label={`第 ${pageNumber} 页可编辑译文`}
               />
             ) : (
               <div
                 ref={translationPreviewRef}
                 data-translation-preview="true"
-                className="h-full max-h-[62vh] overflow-y-auto px-5 py-6 md:max-h-none sm:px-8"
+                className="h-full max-h-[62vh] overflow-y-auto px-4 py-6 md:max-h-none sm:px-6 lg:px-8"
                 onScroll={(event) => sourceRef.current && synchronizeScroll(event.currentTarget, sourceRef.current)}
               >
                 {translating && !translation ? (
@@ -522,9 +688,11 @@ export function BilingualReaderTab() {
                     <p className="mt-1 text-sm">将自动处理错误断行、标题层级与列表结构</p>
                   </div>
                 ) : translation ? (
-                  <MarkdownContent className="prose-headings:scroll-mt-4 prose-headings:tracking-tight prose-h1:border-b prose-h1:pb-3 prose-h1:text-2xl prose-h2:mt-8 prose-h2:border-l-2 prose-h2:border-primary prose-h2:pl-3 prose-h2:text-lg prose-p:text-justify prose-p:leading-8 prose-li:leading-7 prose-blockquote:rounded-r-lg prose-blockquote:bg-muted/40 prose-blockquote:py-2 prose-table:block prose-table:overflow-x-auto prose-th:bg-muted/60">
-                    {translation}
-                  </MarkdownContent>
+                  <article className="mx-auto max-w-[740px]">
+                    <MarkdownContent className="prose-headings:scroll-mt-4 prose-headings:font-sans prose-headings:tracking-[-0.015em] prose-h1:mb-6 prose-h1:border-b prose-h1:border-border/70 prose-h1:pb-6 prose-h1:text-center prose-h1:text-[clamp(1.3rem,1.8vw,1.65rem)] prose-h1:leading-[1.35] prose-h2:mb-3 prose-h2:mt-8 prose-h2:border-b prose-h2:border-border/70 prose-h2:pb-2 prose-h2:text-[17px] prose-h2:leading-7 prose-h3:mb-2 prose-h3:mt-5 prose-h3:text-[13px] prose-h3:font-semibold prose-h3:tracking-[0.06em] prose-h3:text-muted-foreground prose-p:my-[1.05em] prose-p:text-justify prose-p:text-[15.5px] prose-p:leading-[1.82] prose-li:my-1 prose-li:text-[14px] prose-li:leading-[1.7] prose-ul:my-3 prose-strong:font-semibold prose-strong:text-foreground prose-blockquote:my-5 prose-blockquote:border-y prose-blockquote:border-l-0 prose-blockquote:border-border/70 prose-blockquote:bg-muted/20 prose-blockquote:px-3 prose-blockquote:py-2.5 prose-blockquote:text-center prose-blockquote:text-[12.5px] prose-blockquote:not-italic prose-table:block prose-table:overflow-x-auto prose-th:bg-muted/60">
+                      {renderedTranslation}
+                    </MarkdownContent>
+                  </article>
                 ) : (
                   <div className="flex min-h-[380px] items-center justify-center text-sm text-muted-foreground">点击“翻译并排版”生成本页译文。</div>
                 )}

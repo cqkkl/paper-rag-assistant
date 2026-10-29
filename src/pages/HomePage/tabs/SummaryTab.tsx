@@ -9,6 +9,7 @@ import { hasApiKey } from "@/lib/apiKeyStore";
 import { toast } from "sonner";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { ContestWelcome } from "@/components/ContestWelcome";
+import { createDemoPaper } from "@/lib/demoPaper";
 
 // 从论文文本中提取摘要
 function extractAbstract(text: string): string {
@@ -45,7 +46,7 @@ function extractAbstract(text: string): string {
 }
 
 export function SummaryTab() {
-  const { activePaper, updatePaper } = usePaper();
+  const { activePaper, updatePaper, addPaper, setActiveTab } = usePaper();
   const [isGenerating, setIsGenerating] = useState(false);
   const [aiSummary, setAiSummary] = useState<string>(activePaper?.aiSummary ?? "");
   const [activeSubTab, setActiveSubTab] = useState("original");
@@ -53,7 +54,16 @@ export function SummaryTab() {
   const [aiExtractedAbstract, setAiExtractedAbstract] = useState(activePaper?.aiExtractedAbstract ?? "");
 
   if (!activePaper) {
-    return <ContestWelcome onUpload={() => document.querySelector<HTMLButtonElement>('[data-upload-trigger="true"]')?.click()} />;
+    return (
+      <ContestWelcome
+        onUpload={() => document.querySelector<HTMLButtonElement>('[data-upload-trigger="true"]')?.click()}
+        onTryDemo={() => {
+          addPaper(createDemoPaper());
+          setActiveTab("reader");
+          toast.success("评审演示样例已载入，可直接体验双语精读与证据问答");
+        }}
+      />
+    );
   }
 
   const originalAbstract = activePaper.textContent ? extractAbstract(activePaper.textContent) : "";

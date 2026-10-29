@@ -11,6 +11,24 @@ export interface RagChunk {
 const CHUNK_SIZE = 1100;
 const CHUNK_OVERLAP = 180;
 
+const ACADEMIC_QUERY_EXPANSIONS: Array<[RegExp, string]> = [
+  [/创新|贡献|新颖|亮点|novel|innovation|contribution/i, "novel novelty innovation contribution proposed key idea 创新 贡献 方法"],
+  [/方法|模型|框架|流程|method|model|framework|pipeline/i, "method methodology model framework architecture approach algorithm 方法 模型 框架"],
+  [/实验|结果|性能|指标|效果|experiment|result|performance|metric/i, "experiment evaluation result performance metric accuracy baseline ablation 实验 结果 性能 指标"],
+  [/局限|不足|缺点|未来|limitation|weakness|future/i, "limitation drawback weakness future work challenge 局限 不足 未来工作"],
+  [/数据|样本|数据集|dataset|sample|corpus/i, "dataset data sample cohort corpus benchmark 数据集 样本 数据"],
+  [/结论|意义|影响|conclusion|impact|significance/i, "conclusion implication impact significance finding 结论 意义 发现"],
+  [/参数|设置|实现|复现|parameter|setting|implementation|reproduc/i, "parameter hyperparameter setting implementation reproducibility 参数 设置 实现 复现"],
+  [/摘要|概括|总结|summary|abstract|overview/i, "abstract summary overview objective method result conclusion 摘要 总结 背景 方法 结果 结论"],
+];
+
+export function expandAcademicQuery(query: string): string {
+  const expansions = ACADEMIC_QUERY_EXPANSIONS
+    .filter(([pattern]) => pattern.test(query))
+    .map(([, terms]) => terms);
+  return [query, ...expansions].join(" ").trim();
+}
+
 function tokenize(text: string): string[] {
   const normalized = text.toLowerCase();
   const latin = normalized.match(/[a-z0-9][a-z0-9._-]+/g) ?? [];
@@ -74,7 +92,7 @@ export function retrieveRelevantChunks(
     ? paper.pages
     : [{ pageNumber: 1, text: paper.textContent ?? "" }];
   const chunks = chunkPages(pages);
-  const queryTerms = [...new Set(tokenize(query))];
+  const queryTerms = [...new Set(tokenize(expandAcademicQuery(query)))];
   if (!queryTerms.length) return chunks.slice(0, limit);
 
   const documentFrequency = new Map<string, number>();
@@ -86,6 +104,7 @@ export function retrieveRelevantChunks(
     return tokens;
   });
 
+  const averageLength = tokenSets.reduce((sum, tokens) => sum + tokens.length, 0) / Math.max(tokenSets.length, 1);
   const scored = chunks.map((chunk, index) => {
     const tokens = tokenSets[index];
     const frequencies = new Map<string, number>();
@@ -96,8 +115,12 @@ export function retrieveRelevantChunks(
       const frequency = frequencies.get(term) ?? 0;
       if (!frequency) continue;
       matchedTerms += 1;
-      const inverseFrequency = Math.log((chunks.length + 1) / ((documentFrequency.get(term) ?? 0) + 0.5));
-      score += (1 + Math.log(frequency)) * Math.max(0.2, inverseFrequency);
+      const documentCount = documentFrequency.get(term) ?? 0;
+      const inverseFrequency = Math.log(1 + (chunks.length - documentCount + 0.5) / (documentCount + 0.5));
+      const k1 = 1.5;
+      const b = 0.75;
+      const lengthNormalization = frequency + k1 * (1 - b + b * tokens.length / Math.max(averageLength, 1));
+      score += inverseFrequency * (frequency * (k1 + 1)) / lengthNormalization;
     }
     score += matchedTerms / queryTerms.length;
     if (chunk.section && queryTerms.some((term) => tokenize(chunk.section ?? "").includes(term))) {
@@ -108,6 +131,18 @@ export function retrieveRelevantChunks(
 
   const relevant = scored.filter((chunk) => chunk.score > 0).sort((a, b) => b.score - a.score);
   return (relevant.length ? relevant : scored).slice(0, limit);
+}
+
+export function validatePageCitations(content: string, allowedPages: number[]) {
+  const allowed = new Set(allowedPages);
+  const rejected = new Set<number>();
+  const validatedContent = content.replace(/\[第\s*(\d+)\s*页\]\(#page=(\d+)\)/g, (match, labelPage, targetPage) => {
+    const page = Number(targetPage);
+    if (Number(labelPage) === page && allowed.has(page)) return match;
+    rejected.add(page);
+    return `第${Number(labelPage)}页（引用待核验）`;
+  });
+  return { content: validatedContent, rejectedPages: [...rejected] };
 }
 
 export function formatRetrievedContext(chunks: RagChunk[]): string {

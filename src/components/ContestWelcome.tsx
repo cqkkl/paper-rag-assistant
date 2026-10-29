@@ -1,17 +1,18 @@
-import { ArrowRight, BookOpenCheck, Database, FileSearch, GitCompareArrows, LockKeyhole, MessageSquareQuote, Upload } from "lucide-react";
+import { ArrowRight, BookOpenCheck, Database, FileSearch, GitCompareArrows, LockKeyhole, MessageSquareQuote, PlayCircle, Upload } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 
 interface ContestWelcomeProps {
   onUpload: () => void;
+  onTryDemo?: () => void;
 }
 
 const highlights = [
   {
     icon: FileSearch,
     title: "可追溯 RAG",
-    description: "先在论文分页片段中检索，再回答问题；关键结论附带可点击页码。",
+    description: "中英文查询自动扩展，回答只允许引用本轮召回页，并展示可点击的原文证据卡。",
   },
   {
     icon: Database,
@@ -31,7 +32,7 @@ const steps = [
   { icon: BookOpenCheck, title: "核对证据", description: "点击引用跳到对应双语原文页" },
 ];
 
-export function ContestWelcome({ onUpload }: ContestWelcomeProps) {
+export function ContestWelcome({ onUpload, onTryDemo }: ContestWelcomeProps) {
   return (
     <div className="mx-auto max-w-5xl space-y-8 py-4 sm:py-8">
       <section className="overflow-hidden rounded-2xl border bg-gradient-to-br from-primary/10 via-background to-accent/20 px-5 py-8 text-center sm:px-10 sm:py-12">
@@ -42,9 +43,17 @@ export function ContestWelcome({ onUpload }: ContestWelcomeProps) {
         <p className="mx-auto mt-4 max-w-2xl text-sm leading-relaxed text-muted-foreground sm:text-base">
           文献研读助手将分页双语精读、划词高亮、检索增强问答、页码引用和研究笔记整合为一条可信的阅读流程。
         </p>
-        <Button className="mt-6" size="lg" onClick={onUpload}>
-          <Upload className="mr-2 h-4 w-4" />上传第一篇论文<ArrowRight className="ml-2 h-4 w-4" />
-        </Button>
+        <div className="mt-6 flex flex-col items-center justify-center gap-3 sm:flex-row">
+          {onTryDemo && (
+            <Button size="lg" onClick={onTryDemo}>
+              <PlayCircle className="mr-2 h-4 w-4" />一键体验评审样例<ArrowRight className="ml-2 h-4 w-4" />
+            </Button>
+          )}
+          <Button variant="outline" size="lg" onClick={onUpload}>
+            <Upload className="mr-2 h-4 w-4" />上传自己的论文
+          </Button>
+        </div>
+        {onTryDemo && <p className="mt-3 text-xs font-medium text-primary">无需 API Key · 预置双语内容与证据问答 · 约 30 秒看懂核心价值</p>}
         <p className="mt-3 flex items-center justify-center gap-1 text-xs text-muted-foreground">
           <LockKeyhole className="h-3.5 w-3.5" />PDF 默认仅保存在当前浏览器
         </p>

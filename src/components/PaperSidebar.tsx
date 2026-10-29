@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   BookOpen, CheckCircle2, FileText, Key, Loader2, Settings,
-  Trash2, Upload, XCircle,
+  PlayCircle, Trash2, Upload, XCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -21,6 +21,7 @@ import { testDeepSeekApiKey } from "@/lib/deepseek";
 import { cn } from "@/lib/utils";
 import type { IPaper } from "@/lib/types";
 import { toast } from "sonner";
+import { createDemoPaper } from "@/lib/demoPaper";
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
 
@@ -32,7 +33,7 @@ interface PaperSidebarProps {
 export default function PaperSidebar({ mobile = false, onNavigate }: PaperSidebarProps) {
   const {
     papers, activePaperId, isHydrating, setActivePaperId,
-    addPaper, updatePaper, deletePaper,
+    addPaper, updatePaper, deletePaper, setActiveTab,
   } = usePaper();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [width, setWidth] = useState(288);
@@ -252,6 +253,19 @@ export default function PaperSidebar({ mobile = false, onNavigate }: PaperSideba
               <FileText className="mb-3 h-10 w-10 text-sidebar-foreground/20" />
               <p className="text-sm text-sidebar-foreground/50">暂无文献</p>
               <p className="mt-1 text-xs text-sidebar-foreground/40">上传第一篇论文开始研读</p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-4"
+                onClick={() => {
+                  addPaper(createDemoPaper());
+                  setActiveTab("reader");
+                  onNavigate?.();
+                  toast.success("已载入无需 API Key 的评审演示样例");
+                }}
+              >
+                <PlayCircle className="mr-1.5 h-3.5 w-3.5" />体验演示样例
+              </Button>
             </div>
           ) : (
             <div className="space-y-1 pr-2">
@@ -273,7 +287,7 @@ export default function PaperSidebar({ mobile = false, onNavigate }: PaperSideba
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-sm font-medium">{paper.name}</span>
                       <span className="mt-0.5 block text-xs text-sidebar-foreground/50">
-                        {formatFileSize(paper.size)}{paper.pageCount ? ` · ${paper.pageCount} 页` : ""}
+                        {paper.demo ? "内置演示" : formatFileSize(paper.size)}{paper.pageCount ? ` · ${paper.pageCount} 页` : ""}
                       </span>
                       {(paper.status === "parsing" || paper.status === "uploading") && (
                         <Progress value={paper.progress ?? 0} className="mt-2 h-1" />

@@ -251,7 +251,9 @@ export function BilingualReaderTab() {
   const [translating, setTranslating] = useState(false);
   const [layoutUpgrading, setLayoutUpgrading] = useState(false);
   const [translationEditing, setTranslationEditing] = useState(false);
-  const [sourceView, setSourceView] = useState<SourceView>(() => readTextPreference("source-view", ["layout", "page"] as const, "layout"));
+  const [sourceView, setSourceView] = useState<SourceView>(() => activePaper?.demo
+    ? "layout"
+    : readTextPreference("source-view", ["layout", "page"] as const, "layout"));
   const [syncScroll, setSyncScroll] = useState(() => readPreference("sync-scroll", true));
   const [autoTranslate, setAutoTranslate] = useState(() => readPreference("auto-translate", true));
   if (translationPageKey !== translationStateKey) {
@@ -581,7 +583,9 @@ export function BilingualReaderTab() {
                 ><LayoutTemplate className="h-3.5 w-3.5" />智能排版</button>
                 <button
                   type="button"
-                  className={cn("flex items-center gap-1 rounded-md px-2 py-1.5 transition-colors", sourceView === "page" ? "bg-background font-medium shadow-sm" : "text-muted-foreground")}
+                  disabled={activePaper.demo}
+                  title={activePaper.demo ? "演示样例不包含原始 PDF 文件" : undefined}
+                  className={cn("flex items-center gap-1 rounded-md px-2 py-1.5 transition-colors disabled:cursor-not-allowed disabled:opacity-40", sourceView === "page" ? "bg-background font-medium shadow-sm" : "text-muted-foreground")}
                   onClick={() => { setSourceView("page"); saveTextPreference("source-view", "page"); }}
                 ><ImageIcon className="h-3.5 w-3.5" />原始版面</button>
               </div>

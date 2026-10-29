@@ -1,5 +1,5 @@
 import { getApiKey } from "./apiKeyStore";
-import { buildCoverageContext, formatRetrievedContext, retrieveRelevantChunks } from "./rag";
+import { buildCoverageContext, expandAcademicQuery, formatRetrievedContext, retrieveRelevantChunks, type RagChunk } from "./rag";
 import type { IChatMessage, IPaper } from "./types";
 
 const API_BASE = "https://api.deepseek.com/v1";
@@ -137,10 +137,19 @@ export function buildChatPrompt(
   history: IChatMessage[] = [],
 ): ChatMessage[] {
   const chunks = retrieveRelevantChunks(paper, question, 7);
+  return buildChatPromptFromChunks(question, history, chunks);
+}
+
+function buildChatPromptFromChunks(
+  question: string,
+  history: IChatMessage[],
+  chunks: RagChunk[],
+): ChatMessage[] {
   const recentHistory: ChatMessage[] = history.slice(-6).map((message) => ({
     role: message.role,
     content: message.content,
   }));
+  const allowedPages = [...new Set(chunks.map((chunk) => chunk.pageNumber))].sort((a, b) => a - b);
   return [
     {
       role: "system",
@@ -151,8 +160,9 @@ export function buildChatPrompt(
 2. 如果论文里没有相关信息，请明确说明
 3. 回答要准确、简洁
 4. 每个关键结论必须使用 [第X页](#page=X) 标注出处
-5. 不要引用未提供的页面，也不要伪造页码
-6. 结合最近的对话上下文理解追问`,
+5. 本轮允许引用的页码仅为：${allowedPages.join("、")}。不要引用其他页面，也不要伪造页码
+6. 结合最近的对话上下文理解追问
+7. 证据不足时直接说明“当前检索证据不足”，并指出还需要什么信息`,
     },
     {
       role: "user",
@@ -161,6 +171,48 @@ export function buildChatPrompt(
     ...recentHistory,
     { role: "user", content: question },
   ];
+}
+
+function isCrossLanguageQuery(paper: IPaper, question: string) {
+  const questionHasChinese = /[\u3400-\u9fff]/.test(question);
+  const sample = (paper.textContent ?? paper.pages?.map((page) => page.text).join(" ") ?? "").slice(0, 8000);
+  const chineseCount = (sample.match(/[\u3400-\u9fff]/g) ?? []).length;
+  const latinCount = (sample.match(/[a-z]/gi) ?? []).length;
+  return questionHasChinese ? latinCount > chineseCount * 2 : chineseCount > latinCount * 0.6;
+}
+
+export interface PreparedChatRequest {
+  messages: ChatMessage[];
+  chunks: RagChunk[];
+  retrievalQuery: string;
+}
+
+export async function prepareChatRequest(
+  paper: IPaper,
+  question: string,
+  history: IChatMessage[] = [],
+): Promise<PreparedChatRequest> {
+  let retrievalQuery = expandAcademicQuery(question);
+  if (isCrossLanguageQuery(paper, question)) {
+    try {
+      const rewritten = await callDeepSeek([
+        {
+          role: "system",
+          content: "你是学术检索查询改写器。把问题改写为适合在论文原文中检索的双语关键词，保留专有名词、缩写、指标和否定条件。只输出一行关键词，不回答问题，不超过80字。",
+        },
+        { role: "user", content: question },
+      ]);
+      if (rewritten.trim()) retrievalQuery = `${retrievalQuery} ${rewritten.trim()}`;
+    } catch (error) {
+      console.warn("跨语言检索改写失败，使用本地词表继续检索:", error);
+    }
+  }
+  const chunks = retrieveRelevantChunks(paper, retrievalQuery, 7);
+  return {
+    chunks,
+    retrievalQuery,
+    messages: buildChatPromptFromChunks(question, history, chunks),
+  };
 }
 
 /**

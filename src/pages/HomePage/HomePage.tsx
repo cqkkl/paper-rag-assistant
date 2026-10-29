@@ -31,9 +31,9 @@ export default function HomePage() {
             </p>
           </div>
           <div className="flex items-center gap-2 rounded-full bg-accent/50 px-3 py-1.5" role="status">
-            {isParsing ? <Loader2 className="h-4 w-4 animate-spin" /> : apiConfigured ? <Sparkles className="h-4 w-4 text-accent-foreground" /> : <CircleAlert className="h-4 w-4 text-amber-600" />}
+            {isParsing ? <Loader2 className="h-4 w-4 animate-spin" /> : activePaper?.demo || apiConfigured ? <Sparkles className="h-4 w-4 text-accent-foreground" /> : <CircleAlert className="h-4 w-4 text-amber-600" />}
             <span className="text-xs font-medium text-accent-foreground">
-              {isParsing ? "正在解析" : apiConfigured ? "AI 已连接" : "未配置 AI"}
+              {isParsing ? "正在解析" : activePaper?.demo ? "评审演示模式" : apiConfigured ? "AI 已连接" : "未配置 AI"}
             </span>
           </div>
         </div>

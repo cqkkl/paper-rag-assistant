@@ -39,6 +39,13 @@ export interface IPaperHighlight {
   createdAt: number;
 }
 
+export interface IChatCitation {
+  pageNumber: number;
+  section?: string;
+  excerpt: string;
+  score: number;
+}
+
 // 文献类型定义
 export interface IPaper {
   id: string;
@@ -61,6 +68,7 @@ export interface IPaper {
   aiExtractedAbstract?: string;
   translations?: Record<number, string>;
   highlights?: IPaperHighlight[];
+  demo?: boolean;
 }
 
 export interface IChatMessage {
@@ -68,4 +76,7 @@ export interface IChatMessage {
   role: "user" | "assistant";
   content: string;
   timestamp: number;
+  citations?: IChatCitation[];
+  citationWarning?: string;
+  demo?: boolean;
 }

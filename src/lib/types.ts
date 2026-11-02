@@ -68,6 +68,8 @@ export interface IPaper {
   aiExtractedAbstract?: string;
   translations?: Record<number, string>;
   translationGlossary?: string;
+  layoutTranslations?: Record<number, { version: number; sourceKey: string; regions: Record<string, string> }>;
+  pdfHighlights?: Array<{ id: string; pageNumber: number; text: string; rects: Array<{ x: number; y: number; width: number; height: number }> }>;
   translationClips?: Array<{ id: string; pageNumber: number; source: string; translation: string; target: "zh" | "en"; createdAt: number }>;
   highlights?: IPaperHighlight[];
   demo?: boolean;

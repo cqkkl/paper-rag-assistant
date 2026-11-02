@@ -17,11 +17,12 @@ export async function testDeepSeekApiKey(apiKey: string): Promise<void> {
 }
 
 /**
- * 调用DeepSeek API（非流式）
+ * 调用 DeepSeek API；支持流式输出与主动取消。
  */
 export async function callDeepSeek(
   messages: ChatMessage[],
-  onChunk?: (text: string) => void
+  onChunk?: (text: string) => void,
+  signal?: AbortSignal,
 ): Promise<string> {
   const apiKey = getApiKey();
   if (!apiKey) {
@@ -30,6 +31,7 @@ export async function callDeepSeek(
 
   const response = await fetch(`${API_BASE}/chat/completions`, {
     method: "POST",
+    signal,
     headers: {
       "Content-Type": "application/json",
       "Authorization": `Bearer ${apiKey}`,
@@ -61,45 +63,31 @@ export async function callDeepSeek(
   let fullText = "";
   let buffer = "";
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  const consumeLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data:")) return;
+    const data = trimmed.slice(5).trim();
+    if (data === "[DONE]") return;
+    let parsed;
+    try { parsed = JSON.parse(data); } catch { return; }
+    if (parsed.error) throw new Error(parsed.error.message || "翻译服务返回错误");
+    if (parsed.choices?.[0]?.finish_reason === "length") throw new Error("输出超过模型限制，请重试更短的段落");
+    const delta = parsed.choices?.[0]?.delta?.content || "";
+    if (delta) { fullText += delta; onChunk(delta); }
+  };
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() || "";
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
 
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith("data: ")) continue;
-      const data = trimmed.slice(6);
-      if (data === "[DONE]") continue;
-
-      try {
-        const parsed = JSON.parse(data);
-        const delta = parsed.choices[0]?.delta?.content || "";
-        if (delta) {
-          fullText += delta;
-          onChunk(delta);
-        }
-      } catch {
-        // 忽略解析错误的行
-      }
+      for (const line of lines) consumeLine(line);
     }
-  }
-
-  if (buffer.trim().startsWith("data: ")) {
-    try {
-      const parsed = JSON.parse(buffer.trim().slice(6));
-      const delta = parsed.choices[0]?.delta?.content || "";
-      if (delta) {
-        fullText += delta;
-        onChunk(delta);
-      }
-    } catch {
-      // 流已结束，忽略不完整的尾帧
-    }
-  }
+    consumeLine(buffer + decoder.decode());
+  } finally { reader.releaseLock(); }
 
   return fullText;
 }

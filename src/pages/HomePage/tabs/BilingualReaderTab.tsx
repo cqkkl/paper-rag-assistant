@@ -5,13 +5,14 @@ import {
   Loader2, RefreshCw, Sparkles,
 } from "lucide-react";
 import { MarkdownContent } from "@/components/MarkdownContent";
+import { SelectionTranslation } from "@/components/SelectionTranslation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import { usePaper } from "@/contexts/PaperContext";
 import { useApiKeyStatus } from "@/hooks/use-api-key-status";
-import { callDeepSeek } from "@/lib/deepseek";
+import { translateText } from "@/lib/translation";
 import { PAPER_LAYOUT_VERSION, type IPaperHighlight, type IPaperTextBlock, type PaperBlockKind } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -176,7 +177,7 @@ function normalizeAcademicMarkdown(markdown: string) {
     if (!value) return "";
     if (/^(?:#{1,6}\s|[-*+]\s|>\s|\d+\.\s|\|)/.test(value)) return line;
 
-    if (index === firstContentIndex && !looksLikeAuthorName(value) && !looksLikeSectionHeading(value)) {
+    if (index === firstContentIndex && value.length < 140 && !/[。.!?！？]$/.test(value) && !looksLikeAuthorName(value) && !looksLikeSectionHeading(value)) {
       return `# ${value}`;
     }
 
@@ -204,6 +205,11 @@ function normalizeAcademicMarkdown(markdown: string) {
 }
 
 export function BilingualReaderTab() {
+  const { activePaperId, previewPage } = usePaper();
+  return <BilingualReaderContent key={`${activePaperId}:${previewPage}`} />;
+}
+
+function BilingualReaderContent() {
   const { activePaper, previewPage, openPage, updatePaper } = usePaper();
   const apiConfigured = useApiKeyStatus();
   const sourceRef = useRef<HTMLDivElement>(null);
@@ -212,6 +218,14 @@ export function BilingualReaderTab() {
   const synchronizing = useRef(false);
   const autoRequested = useRef(new Set<string>());
   const layoutUpgradeRequested = useRef<string | null>(null);
+  const pageRequest = useRef<AbortController | null>(null);
+  const [selection, setSelection] = useState<{ text: string; start: number; end: number } | null>(null);
+  const [progress, setProgress] = useState({ completed: 0, total: 0 });
+  const [glossaryOpen, setGlossaryOpen] = useState(false);
+  const [glossary, setGlossary] = useState(activePaper?.translationGlossary ?? "");
+  const latestPaper = useRef(activePaper);
+  useEffect(() => { latestPaper.current = activePaper; }, [activePaper]);
+  useEffect(() => () => pageRequest.current?.abort(), []);
   const pages = useMemo(() => activePaper?.pages ?? [], [activePaper?.pages]);
   const pageNumber = Math.min(Math.max(previewPage, 1), Math.max(1, pages.length));
   const currentPage = pages.find((page) => page.pageNumber === pageNumber) ?? pages[pageNumber - 1];
@@ -251,6 +265,14 @@ export function BilingualReaderTab() {
   const [translating, setTranslating] = useState(false);
   const [layoutUpgrading, setLayoutUpgrading] = useState(false);
   const [translationEditing, setTranslationEditing] = useState(false);
+  const pendingEdit = useRef<{ dirty: boolean; text: string }>({ dirty: false, text: savedTranslation });
+  useEffect(() => { pendingEdit.current = { dirty: translationDirty, text: translation }; }, [translationDirty, translation]);
+  useEffect(() => () => {
+    const paper = latestPaper.current;
+    if (paper && pendingEdit.current.dirty) updatePaper(paper.id, {
+      translations: { ...paper.translations, [pageNumber]: pendingEdit.current.text },
+    });
+  }, [pageNumber, updatePaper]);
   const [sourceView, setSourceView] = useState<SourceView>(() => activePaper?.demo
     ? "layout"
     : readTextPreference("source-view", ["layout", "page"] as const, "layout"));
@@ -332,47 +354,34 @@ export function BilingualReaderTab() {
       return;
     }
 
+    const controller = new AbortController();
+    pageRequest.current = controller;
+    if (translationDirty) updatePaper(activePaper.id, {
+      translations: { ...(latestPaper.current?.translations ?? {}), [pageNumber]: translation },
+    });
     setTranslating(true);
+    setProgress({ completed: 0, total: 0 });
     setTranslationEditing(false);
-    setTranslation("");
     setTranslationDirty(false);
     try {
-      const messages = [
-        {
-          role: "system" as const,
-          content: `你是专业的学术论文翻译与版式编辑。请先根据语义还原 PDF 文本的正确阅读顺序，再完整翻译为准确、流畅的中文，并输出可直接渲染的 Markdown。
-
-排版规则：
-1. 合并 PDF 导致的错误断行，不要把每个视觉换行当成独立段落；
-2. 用 #、##、### 表示论文标题和章节层级，正文按语义划分为自然段；
-3. 作者姓名整理为连续、易读的一行；作者单位按 a、b、c 等标记整理为项目列表；
-4. 关键词整理为“**关键词：** 词一；词二；词三”；
-5. 枚举内容使用 Markdown 列表，表格使用 Markdown 表格；
-6. 图片和表格标题使用引用块，例如“> **图 1｜标题**”；保留图号、表号及其说明；
-7. 公式单独成行，保留变量、上下标含义、数据、单位、参考文献编号；
-8. 专业术语首次出现时可保留英文括注；不得概括、删减或补充原文没有的信息；
-9. 只输出排版后的译文，不要解释处理过程，也不要使用 Markdown 代码块。`,
-        },
-        {
-          role: "user" as const,
-          content: `论文第 ${pageNumber} 页原文：\n\n${sourceText.slice(0, 18000)}`,
-        },
-      ];
-      const fullText = await callDeepSeek(messages, (chunk) => {
-        setTranslation((current) => current + chunk);
+      const fullText = await translateText(sourceText, {
+        glossary: activePaper.translationGlossary,
+        context: `${activePaper.name}\n${pages[0]?.text.slice(0, 1200) ?? ""}`,
+        signal: controller.signal,
+        onProgress: (completed, total) => setProgress({ completed, total }),
       });
+      if (controller.signal.aborted) return;
       setTranslation(fullText);
       updatePaper(activePaper.id, {
-        translations: { ...(activePaper.translations ?? {}), [pageNumber]: fullText },
+        translations: { ...(latestPaper.current?.translations ?? {}), [pageNumber]: fullText },
       });
       toast.success(`第 ${pageNumber} 页翻译完成`);
     } catch (error) {
-      console.error("页面翻译失败:", error);
-      toast.error("翻译失败，请检查 API Key 和网络");
+      if (!controller.signal.aborted) toast.error(error instanceof Error ? error.message : "翻译失败，请重试");
     } finally {
-      setTranslating(false);
+      if (!controller.signal.aborted || pageRequest.current === controller) setTranslating(false);
     }
-  }, [activePaper, apiConfigured, pageNumber, sourceText, translating, updatePaper]);
+  }, [activePaper, apiConfigured, pageNumber, sourceText, translating, updatePaper, pages, translation, translationDirty]);
 
   useEffect(() => {
     if (!autoTranslate || !apiConfigured || !activePaper || !sourceText.trim()) return;
@@ -409,7 +418,7 @@ export function BilingualReaderTab() {
     updatePaper(activePaper.id, { highlights });
   };
 
-  const addSelectionHighlight = () => {
+  const captureSelection = () => {
     const selection = window.getSelection();
     const container = sourceRef.current;
     if (!selection || selection.rangeCount === 0 || selection.isCollapsed || !container) return;
@@ -425,13 +434,18 @@ export function BilingualReaderTab() {
     const leadingWhitespace = rawSelectedText.length - rawSelectedText.trimStart().length;
     const start = before.toString().length + leadingWhitespace;
     const end = start + selectedText.length;
+    setSelection({ text: selectedText, start, end });
+  };
+
+  const addSelectionHighlight = () => {
+    if (!selection) return;
+    const { text: selectedText, start, end } = selection;
     const allHighlights = activePaper.highlights ?? [];
     const overlaps = allHighlights.some((highlight) =>
       highlight.pageNumber === pageNumber && start < highlight.end && end > highlight.start,
     );
     if (overlaps) {
       toast.info("所选内容与已有高亮重叠");
-      selection.removeAllRanges();
       return;
     }
 
@@ -442,7 +456,7 @@ export function BilingualReaderTab() {
         color: highlightColor, createdAt: Date.now(),
       },
     ]);
-    selection.removeAllRanges();
+    window.getSelection()?.removeAllRanges();
     toast.success("已添加高亮");
   };
 
@@ -562,6 +576,7 @@ export function BilingualReaderTab() {
           <span className="hidden text-xs text-muted-foreground sm:inline">共 {pages.length} 页</span>
         </div>
         <div className="flex flex-wrap items-center gap-3 text-xs">
+          <Button size="sm" variant="ghost" onClick={() => setGlossaryOpen((value) => !value)}>术语约定</Button>
           <label className="flex items-center gap-2"><Checkbox checked={autoTranslate} onCheckedChange={(checked) => { const value = checked === true; setAutoTranslate(value); savePreference("auto-translate", value); }} />自动翻译新页面</label>
           <label className="flex items-center gap-2"><Checkbox checked={syncScroll} onCheckedChange={(checked) => { const value = checked === true; setSyncScroll(value); savePreference("sync-scroll", value); }} />同步滚动</label>
           {activePaper.fileUrl && (
@@ -569,6 +584,22 @@ export function BilingualReaderTab() {
           )}
         </div>
       </div>
+
+      {glossaryOpen && <section className="rounded-lg border bg-card p-4" aria-label="论文术语约定">
+        <p className="mb-2 text-sm font-medium">为这篇论文统一术语译法</p>
+        <Textarea aria-label="术语映射，每行一个" value={glossary} maxLength={3000} onChange={(event) => setGlossary(event.target.value)} placeholder={"每行一个术语，例如：\nretrieval-augmented generation = 检索增强生成\ncavitation = 空化"} className="min-h-24" />
+        <div className="mt-2 flex items-center gap-3"><Button size="sm" onClick={() => { updatePaper(activePaper.id, { translationGlossary: glossary }); toast.success("术语已保存，后续翻译将使用这些约定"); }}>保存术语</Button><span className="text-xs text-muted-foreground">用于后续整页与选区翻译；已有译文可手动重译。</span></div>
+      </section>}
+
+      {selection && <SelectionTranslation key={`${selection.start}:${selection.end}`} text={selection.text} context={sourceText} glossary={activePaper.translationGlossary ?? ""} configured={apiConfigured}
+        onHighlight={addSelectionHighlight} onClose={() => setSelection(null)}
+        onSave={(text, target) => {
+          const paper = latestPaper.current ?? activePaper;
+          const clip = { id: crypto.randomUUID(), pageNumber, source: selection.text, translation: text, target, createdAt: Date.now() };
+          const quote = selection.text.replace(/\n/g, "\n> ");
+          updatePaper(paper.id, { translationClips: [...(paper.translationClips ?? []), clip], notes: `${paper.notes ?? ""}\n\n### 翻译摘录 · [第${pageNumber}页](#page=${pageNumber})\n\n> ${quote}\n\n${text}`.trim() });
+          toast.success("原文、译文和来源页码已存入研读笔记");
+        }} />}
 
       <div className="grid gap-4 md:h-[calc(100dvh-230px)] md:min-h-[560px] md:grid-cols-2">
         <Card className="flex min-h-[520px] min-w-0 flex-col overflow-hidden border-border/80 bg-card shadow-sm md:min-h-0">
@@ -592,7 +623,7 @@ export function BilingualReaderTab() {
             </div>
             {sourceView === "layout" ? (
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-xs text-muted-foreground">{layoutUpgrading ? "正在升级旧文献的段落结构…" : "已按标题、正文、列表与图表说明重排；鼠标划词即可高亮。"}</p>
+                <p className="text-xs text-muted-foreground">{layoutUpgrading ? "正在升级旧文献的段落结构…" : "选中文字即可翻译、查询词义或高亮，并将双语摘录存入笔记。"}</p>
                 <div className="flex items-center gap-1">
                   <Highlighter className="mr-1 h-4 w-4 text-muted-foreground" />
                   {colorButtons.map((item) => (
@@ -619,7 +650,8 @@ export function BilingualReaderTab() {
                 ref={sourceRef}
                 data-source-text="true"
                 className="h-full max-h-[62vh] overflow-y-auto px-4 py-6 selection:bg-primary/20 md:max-h-none sm:px-6 lg:px-8"
-                onMouseUp={addSelectionHighlight}
+                onMouseUp={captureSelection}
+                onKeyUp={(event) => { if (event.key === "Shift") captureSelection(); }}
                 onScroll={(event) => { const target = translationScroller(); if (target) synchronizeScroll(event.currentTarget, target); }}
               >
                 <article className="mx-auto max-w-[740px]">
@@ -646,6 +678,7 @@ export function BilingualReaderTab() {
                 <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">{translationDirty ? "正在保存修改…" : translation ? <><Check className="h-3.5 w-3.5" />已按学术结构排版并保存</> : "尚未生成译文"}</p>
               </div>
               <div className="flex items-center gap-2">
+                {translating && <Button size="sm" variant="outline" onClick={() => pageRequest.current?.abort()}>取消翻译</Button>}
                 {translation && !translating && (
                   <Button size="sm" variant="ghost" onClick={() => setTranslationEditing((value) => !value)}>
                     {translationEditing ? <><Eye className="mr-1 h-4 w-4" />阅读</> : <><FilePenLine className="mr-1 h-4 w-4" />编辑</>}
@@ -653,7 +686,7 @@ export function BilingualReaderTab() {
                 )}
                 <Button size="sm" variant={translation ? "outline" : "default"} disabled={translating || !sourceText} onClick={() => void translateCurrentPage()}>
                   {translating ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : translation ? <RefreshCw className="mr-1 h-4 w-4" /> : <Sparkles className="mr-1 h-4 w-4" />}
-                  {translating ? "翻译排版中…" : translation ? "重新生成" : "翻译并排版"}
+                  {translating ? `分段翻译 ${progress.completed}/${progress.total || "…"}` : translation ? "重新生成" : "翻译并排版"}
                 </Button>
               </div>
             </div>

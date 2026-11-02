@@ -38,6 +38,7 @@ export function PdfParallelReader({ onTextMode }: { onTextMode?: () => void }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState([0, 0]);
+  const [repairing, setRepairing] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [selected, setSelected] = useState("");
   const [editing, setEditing] = useState<PageRegion | null>(null);
@@ -155,13 +156,13 @@ export function PdfParallelReader({ onTextMode }: { onTextMode?: () => void }) {
     if (!layout || busy) return;
     if (!configured) { toast.error("请先在 API 设置中配置 DeepSeek Key"); return; }
     const controller = new AbortController(); request.current = controller;
-    setBusy(true); setError("");
+    setBusy(true); setError(""); setRepairing(false);
     const existing = { ...values };
     try {
       const pending = layout.regions.filter((r) => !existing[r.id]);
-      await translateRegions(pending, activePaper?.translationGlossary ?? "", controller.signal, (batch, done, total) => {
+      await translateRegions(pending, activePaper?.translationGlossary ?? "", controller.signal, (batch, done, total, status) => {
         if (controller.signal.aborted) return;
-        setProgress([done, total]); saveValues({ ...existing, ...batch });
+        setProgress([done, total]); setRepairing(status?.repairing ?? false); saveValues({ ...existing, ...batch });
       });
       toast.success("本页译文已按原版位置保存");
     } catch (err) {
@@ -218,7 +219,7 @@ export function PdfParallelReader({ onTextMode }: { onTextMode?: () => void }) {
         <Button size="icon" variant="outline" aria-label="下一页" disabled={previewPage >= (activePaper?.pageCount ?? 1)} onClick={() => openPage(previewPage + 1)}><ArrowRight className="h-4 w-4" /></Button>
         <span className="mx-1 h-5 border-l" />
         <Button size="icon" variant="ghost" aria-label="缩小两侧页面" disabled={zoom <= .75} onClick={() => setZoom((z) => z - .25)}><Minus className="h-4 w-4" /></Button>
-        <button className="text-xs tabular-nums" onClick={() => setZoom(1)} title="点击恢复适合宽度">{Math.round(zoom * 100)}%</button>
+        <button className="text-xs tabular-nums" onClick={() => setZoom(1)} title="点击恢复适合宽度" aria-label="适合栏宽">{zoom === 1 ? "适合宽度" : `${Math.round(zoom * 100)}%`}</button>
         <Button size="icon" variant="ghost" aria-label="放大两侧页面" disabled={zoom >= 2.5} onClick={() => setZoom((z) => z + .25)}><Plus className="h-4 w-4" /></Button>
       </div>
       <div className="flex items-center gap-2">
@@ -227,12 +228,12 @@ export function PdfParallelReader({ onTextMode }: { onTextMode?: () => void }) {
         {onTextMode && <Button size="sm" variant="ghost" className="hidden xl:inline-flex" onClick={onTextMode}>文本精读</Button>}
         <Button size="sm" variant="ghost" onClick={() => setGlossaryOpen((v) => !v)}>术语约定</Button>
         {busy ? <Button size="sm" variant="outline" onClick={() => request.current?.abort()}>取消翻译</Button>
-          : <Button size="sm" disabled={!layout || !total || translatedCount === total} onClick={() => void translate()}><Languages className="mr-2 h-4 w-4" />{translatedCount > 0 && translatedCount < total ? "继续翻译本页" : translatedCount === total && total ? "本页已翻译" : "翻译本页 · 保留版式"}</Button>}
+          : <Button size="sm" disabled={!layout || !total || translatedCount === total} onClick={() => void translate()}><Languages className="mr-2 h-4 w-4" />{translatedCount > 0 && translatedCount < total ? "继续翻译本页" : translatedCount === total && total ? "本页已翻译" : error ? "重试本页翻译" : "翻译本页 · 保留版式"}</Button>}
       </div>
     </div>
     {glossaryOpen && <div className="rounded-lg border bg-card p-4"><label htmlFor="layout-glossary" className="mb-2 block text-sm font-medium">本篇论文的术语约定</label><Textarea id="layout-glossary" value={glossary} maxLength={3000} onChange={(e) => setGlossary(e.target.value)} placeholder="cavitation = 空化" /><Button className="mt-2" size="sm" onClick={() => { updatePaper(activePaper!.id, { translationGlossary: glossary }); toast.success("已保存，用于后续翻译"); }}>保存术语</Button></div>}
     <div className="flex flex-wrap items-center justify-between gap-2 px-1 text-xs text-muted-foreground">
-      <span>{busy ? <span className="flex items-center gap-2"><Loader2 className="h-3.5 w-3.5 animate-spin" />正在翻译文字区域 {progress[0]}/{progress[1]}</span> : <span className="flex items-center gap-1"><Check className="h-3.5 w-3.5" />原页图像与文字区域对齐 · 已翻译 {translatedCount}/{total}</span>}</span>
+      <span>{busy ? <span className="flex items-center gap-2"><Loader2 className="h-3.5 w-3.5 animate-spin" />{repairing ? "正在自动补译缺失区域" : "正在逐区翻译"} {progress[0]}/{progress[1]}</span> : <span className="flex items-center gap-1">{total > 0 && translatedCount === total ? <Check className="h-3.5 w-3.5" /> : <Languages className="h-3.5 w-3.5" />}已翻译 {translatedCount}/{total}{translatedCount < total && " · 未完成区域暂显原文"}</span>}</span>
       <div className="flex flex-wrap items-center gap-3"><span className="hidden lg:inline">拖动中线调宽 · 拖动底边调高 · 双击恢复</span><label className="flex items-center gap-1">高度<select aria-label="阅读区高度" className="rounded border bg-background px-1 py-0.5" value={Math.round(readerHeightRatio * 100)} onChange={(e) => readerSetHeight(Number(e.target.value) / 100)}>{![100, 85, 70].includes(Math.round(readerHeightRatio * 100)) && <option value={Math.round(readerHeightRatio * 100)}>{Math.round(readerHeightRatio * 100)}%</option>}<option value="100">充满屏幕</option><option value="85">85%</option><option value="70">70%</option></select></label><span className="tabular-nums">原文 {Math.round(readerSplit)}% / 译文 {Math.round(100 - readerSplit)}%</span></div>
     </div>
     {error && <p role="alert" className="rounded-lg border border-destructive/25 bg-destructive/5 p-3 text-sm text-destructive">{error}</p>}
@@ -246,8 +247,8 @@ export function PdfParallelReader({ onTextMode }: { onTextMode?: () => void }) {
     </div>
     <div ref={readerStage} className="grid rounded-lg border bg-slate-100/70 p-1.5 dark:bg-muted/30" style={{ height: readerHeight, gridTemplateColumns: `minmax(0, ${readerSplit}fr) 14px minmax(0, ${100 - readerSplit}fr)` }} data-pdf-parallel="true">
       {[false, true].map((right) => { const pageScale = scales[right ? 1 : 0]; return <Fragment key={String(right)}><section className="flex min-h-0 min-w-0 flex-col" ref={right ? readerRightColumn : readerLeftColumn}>
-        <div className="flex h-7 shrink-0 items-center justify-between gap-1 px-1 text-xs font-medium"><span className="truncate">{right ? "中文译文 · 原版对照" : "论文原文 · 原始 PDF"}</span><span className="shrink-0 font-normal text-muted-foreground">第 {previewPage} 页</span></div>
-        <div ref={right ? rightScroll : leftScroll} data-pdf-pane={right ? "translation" : "source"} data-page-scale={pageScale} className="min-h-0 flex-1 overflow-auto overscroll-contain rounded bg-slate-200/40 p-2 dark:bg-muted/50"
+        <div className="flex h-7 shrink-0 items-center justify-between gap-1 px-1 text-xs font-medium"><span className="truncate">{right ? translatedCount ? "中文译文 · 原版对照" : "待翻译 · 当前显示原文" : "论文原文 · 原始 PDF"}</span><span className="shrink-0 font-normal text-muted-foreground">第 {previewPage} 页</span></div>
+        <div ref={right ? rightScroll : leftScroll} data-pdf-pane={right ? "translation" : "source"} data-page-scale={pageScale} style={{ scrollbarGutter: "stable" }} className="min-h-0 flex-1 overflow-auto overscroll-contain rounded bg-slate-200/40 p-2 dark:bg-muted/50"
           onScroll={(e) => sync(e.currentTarget, right ? leftScroll.current : rightScroll.current)}>
           <div style={{ width: layout ? layout.width * pageScale : "100%", height: layout ? layout.height * pageScale : 760, position: "relative", margin: "0 auto" }}>
             <div ref={right ? undefined : sheet} className="absolute left-0 top-0 origin-top-left bg-white text-black shadow-lg" style={{ width: layout?.width ?? 612, height: layout?.height ?? 792, transform: `scale(${pageScale})` }} onMouseUp={right ? undefined : capture} onKeyUp={right ? undefined : (e) => { if (e.key === "Shift") capture(); }}>

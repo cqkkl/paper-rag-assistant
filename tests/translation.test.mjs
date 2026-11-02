@@ -76,5 +76,21 @@ test('SSE handles split UTF-8 frames, surfaces service errors and truncation', a
     await assert.rejects(callDeepSeek([], () => {}), /quota exhausted/);
     respond('data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n');
     await assert.rejects(callDeepSeek([], () => {}), /模型限制/);
+    respond('data: {"choices":[{"delta":{"content":"未完整结束的译文"}}]}\n');
+    await assert.rejects(callDeepSeek([], () => {}), /连接提前结束/);
   } finally { globalThis.fetch = originalFetch; }
+});
+
+test('structured requests enable JSON mode and explicit output budget', async () => {
+  const originalFetch = globalThis.fetch;
+  const { callDeepSeek } = await load('deepseek', { './apiKeyStore': { getApiKey: () => 'test-key' }, './rag': { buildCoverageContext() {}, expandAcademicQuery() {}, formatRetrievedContext() {}, retrieveRelevantChunks() {} } });
+  try {
+    globalThis.fetch = async (_url, options) => {
+      const body=JSON.parse(options.body);
+      assert.deepEqual(body.response_format,{type:'json_object'});
+      assert.equal(body.max_tokens,6144);
+      return Response.json({choices:[{message:{content:'{"region-0":"译文"}'},finish_reason:'stop'}]});
+    };
+    assert.equal(await callDeepSeek([],undefined,undefined,{json:true,maxTokens:6144}),'{'+'"region-0":"译文"}');
+  } finally {globalThis.fetch=originalFetch;}
 });

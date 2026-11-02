@@ -28,10 +28,15 @@ export function useReaderSizing() {
   useEffect(() => {
     const measure = () => {
       if (stage.current) setAvailableHeight(Math.max(260, window.innerHeight - Math.max(0, stage.current.getBoundingClientRect().top) - 28));
-      setWidths([leftColumn.current, rightColumn.current].map((column) => Math.max(120, (column?.clientWidth ?? 600) - 16)));
+      setWidths([leftColumn.current, rightColumn.current].map((column) => {
+        const pane = column?.querySelector<HTMLElement>("[data-pdf-pane]");
+        if (!pane) return 600;
+        const style = getComputedStyle(pane);
+        return Math.max(80, pane.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - 1);
+      }));
     };
     const observer = new ResizeObserver(measure);
-    for (const element of [root.current, leftColumn.current, rightColumn.current, root.current?.querySelector("[data-reader-controls]")]) if (element) observer.observe(element);
+    for (const element of [root.current, leftColumn.current, rightColumn.current, leftColumn.current?.querySelector("[data-pdf-pane]"), rightColumn.current?.querySelector("[data-pdf-pane]"), root.current?.querySelector("[data-reader-controls]")]) if (element) observer.observe(element);
     window.addEventListener("resize", measure);
     measure();
     return () => { observer.disconnect(); window.removeEventListener("resize", measure); };

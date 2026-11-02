@@ -23,6 +23,7 @@ export async function callDeepSeek(
   messages: ChatMessage[],
   onChunk?: (text: string) => void,
   signal?: AbortSignal,
+  options?: { json?: boolean; maxTokens?: number },
 ): Promise<string> {
   const apiKey = getApiKey();
   if (!apiKey) {
@@ -41,6 +42,8 @@ export async function callDeepSeek(
       messages,
       stream: !!onChunk,
       temperature: 0.3,
+      ...(options?.json ? { response_format: { type: "json_object" } } : {}),
+      ...(options?.maxTokens ? { max_tokens: options.maxTokens } : {}),
     }),
   });
 
@@ -52,6 +55,8 @@ export async function callDeepSeek(
   if (!onChunk) {
     // 非流式
     const data = await response.json();
+    if (data.error) throw new Error(data.error.message || "模型服务返回错误");
+    if (data.choices?.[0]?.finish_reason === "length") throw new Error("输出超过模型限制，请重试更短的段落");
     return data.choices[0]?.message?.content || "";
   }
 
@@ -62,16 +67,18 @@ export async function callDeepSeek(
   const decoder = new TextDecoder();
   let fullText = "";
   let buffer = "";
+  let completed = false;
 
   const consumeLine = (line: string) => {
     const trimmed = line.trim();
     if (!trimmed.startsWith("data:")) return;
     const data = trimmed.slice(5).trim();
-    if (data === "[DONE]") return;
+    if (data === "[DONE]") { completed = true; return; }
     let parsed;
     try { parsed = JSON.parse(data); } catch { return; }
     if (parsed.error) throw new Error(parsed.error.message || "翻译服务返回错误");
     if (parsed.choices?.[0]?.finish_reason === "length") throw new Error("输出超过模型限制，请重试更短的段落");
+    if (parsed.choices?.[0]?.finish_reason === "stop") completed = true;
     const delta = parsed.choices?.[0]?.delta?.content || "";
     if (delta) { fullText += delta; onChunk(delta); }
   };
@@ -87,6 +94,7 @@ export async function callDeepSeek(
       for (const line of lines) consumeLine(line);
     }
     consumeLine(buffer + decoder.decode());
+    if (!completed) throw new Error("翻译连接提前结束，请继续翻译未完成区域");
   } finally { reader.releaseLock(); }
 
   return fullText;

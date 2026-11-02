@@ -210,8 +210,7 @@ export function BilingualReaderTab() {
   const [textMode, setTextMode] = useState(false);
   if (!activePaper?.fileBlob) return <div className="space-y-3">{activePaper && <p className="rounded-lg border bg-card px-4 py-3 text-sm text-muted-foreground">当前文献只有文本数据。上传带文本层的 PDF 后，即可使用左侧原始论文、右侧原位译文的版式对照。</p>}<BilingualReaderContent key={`${activePaperId}:${previewPage}`} /></div>;
   return <div className="space-y-3">
-    <div className="flex items-center justify-between gap-3"><div><h2 className="font-semibold">双语论文对照</h2><p className="text-xs text-muted-foreground">原始 PDF 与同版式译文逐页并排</p></div><Button size="sm" variant="outline" onClick={() => setTextMode((value) => !value)}>{textMode ? "返回原版对照" : "切换文本精读"}</Button></div>
-    {textMode ? <BilingualReaderContent key={`${activePaperId}:${previewPage}`} /> : <Suspense fallback={<div className="p-12 text-center text-sm text-muted-foreground">正在加载原版双语阅读器…</div>}><PdfParallelReader key={`${activePaperId}:${previewPage}`} /></Suspense>}
+    {textMode ? <><Button size="sm" variant="outline" onClick={() => setTextMode(false)}>返回原版对照</Button><BilingualReaderContent key={`${activePaperId}:${previewPage}`} /></> : <Suspense fallback={<div className="p-12 text-center text-sm text-muted-foreground">正在加载原版双语阅读器…</div>}><PdfParallelReader key={`${activePaperId}:${previewPage}`} onTextMode={() => setTextMode(true)} /></Suspense>}
   </div>;
 }
 

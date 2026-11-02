@@ -18,14 +18,15 @@ export default function HomePage() {
   const { activePaper, activeTab, previewPage, setActiveTab } = usePaper();
   const apiConfigured = useApiKeyStatus();
   const isParsing = activePaper?.status === "parsing" || activePaper?.status === "uploading";
+  const reading = activeTab === "reader";
 
   return (
     <div className="min-h-full">
       {/* 顶部标题栏 */}
-      <header className="sticky top-0 z-10 border-b border-border bg-card/95 py-3 pl-14 pr-4 backdrop-blur md:px-6 md:py-4">
+      <header className={`sticky top-0 z-10 border-b border-border bg-card/95 pl-14 pr-4 backdrop-blur md:px-4 ${reading ? "py-2" : "py-3 md:py-4"}`}>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0">
-            <h2 className="text-lg font-semibold">文献研读工作台</h2>
+            {!reading && <h2 className="text-lg font-semibold">文献研读工作台</h2>}
             <p className="truncate text-xs text-muted-foreground sm:text-sm">
               {activePaper ? activePaper.name : "上传论文后开始可追溯的深度研读"}
             </p>
@@ -40,9 +41,9 @@ export default function HomePage() {
       </header>
 
       {/* 标签页内容 */}
-      <div className="p-3 sm:p-4 md:p-6">
+      <div className={reading ? "p-2 md:px-3" : "p-3 sm:p-4 md:p-6"}>
         <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <div className="mb-4 w-full overflow-x-auto pb-1">
+          <div className={`${reading ? "mb-2" : "mb-4"} w-full overflow-x-auto pb-1`}>
           <TabsList className="w-max min-w-full justify-start">
             <TabsTrigger value="summary" className="gap-2">
               <FileText className="h-4 w-4" />

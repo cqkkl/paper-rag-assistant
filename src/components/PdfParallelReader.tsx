@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as pdfjs from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-import { ArrowLeft, ArrowRight, Check, Highlighter, Languages, Loader2, Minus, Plus, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, GripVertical, Highlighter, Languages, Loader2, Maximize2, Minimize2, Minus, Plus, RotateCcw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { usePaper } from "@/contexts/PaperContext";
 import { useApiKeyStatus } from "@/hooks/use-api-key-status";
+import { useReaderSizing } from "@/hooks/use-reader-sizing";
 import { groupPageLines, fitRegionText, type PageLine, type PageRegion } from "@/lib/pdfLayout";
 import { translateRegions } from "@/lib/layoutTranslation";
 import { toast } from "sonner";
@@ -13,7 +14,7 @@ import { toast } from "sonner";
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 const VERSION = 1;
 
-export function PdfParallelReader() {
+export function PdfParallelReader({ onTextMode }: { onTextMode?: () => void }) {
   const { activePaper, previewPage, openPage, updatePaper } = usePaper();
   const configured = useApiKeyStatus();
   const latest = useRef(activePaper);
@@ -23,7 +24,14 @@ export function PdfParallelReader() {
   const leftScroll = useRef<HTMLDivElement>(null);
   const rightScroll = useRef<HTMLDivElement>(null);
   const sheet = useRef<HTMLDivElement>(null);
-  const column = useRef<HTMLDivElement>(null);
+  const {
+    widths: readerWidths, focus: readerFocus, toggleFocus: readerToggleFocus,
+    root: readerRoot, stage: readerStage, reset: readerReset,
+    heightRatio: readerHeightRatio, setHeight: readerSetHeight, height: readerHeight,
+    split: readerSplit, setSplit: readerSetSplit,
+    rightColumn: readerRightColumn, leftColumn: readerLeftColumn,
+    startDrag: readerStartDrag, moveDrag: readerMoveDrag, stopDrag: readerStopDrag,
+  } = useReaderSizing();
   const syncing = useRef(false);
   const request = useRef<AbortController | null>(null);
   const [layout, setLayout] = useState<{ width: number; height: number; regions: PageRegion[]; sourceKey: string } | null>(null);
@@ -31,7 +39,6 @@ export function PdfParallelReader() {
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState([0, 0]);
   const [zoom, setZoom] = useState(1);
-  const [available, setAvailable] = useState(600);
   const [selected, setSelected] = useState("");
   const [editing, setEditing] = useState<PageRegion | null>(null);
   const [draft, setDraft] = useState("");
@@ -44,15 +51,15 @@ export function PdfParallelReader() {
   const [selection, setSelection] = useState<{ text: string; rects: Array<{ x: number; y: number; width: number; height: number }> } | null>(null);
   const stored = activePaper?.layoutTranslations?.[previewPage];
   const values = useMemo(() => stored?.version === VERSION && stored.sourceKey === layout?.sourceKey ? stored.regions : {}, [stored, layout]);
-  const scale = layout ? Math.min(available / layout.width, 1.8) * zoom : 1;
+  const scales = readerWidths.map((width) => layout ? Math.min(width / layout.width, 1.8) * zoom : 1);
+  const scale = scales[0];
 
   useEffect(() => {
-    const element = column.current;
-    if (!element) return;
-    const observer = new ResizeObserver(([entry]) => setAvailable(Math.max(240, entry.contentRect.width - 32)));
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
+    if (!readerFocus) return;
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape" && !editing) readerToggleFocus(false); };
+    window.addEventListener("keydown", escape);
+    return () => window.removeEventListener("keydown", escape);
+  }, [readerFocus, readerToggleFocus, editing]);
 
   useEffect(() => {
     let disposed = false;
@@ -170,7 +177,10 @@ export function PdfParallelReader() {
   const sync = (from: HTMLDivElement, to: HTMLDivElement | null) => {
     if (!to || syncing.current) return;
     syncing.current = true;
-    to.scrollTop = from.scrollTop; to.scrollLeft = from.scrollLeft;
+    const fromScale = Number(from.dataset.pageScale) || 1;
+    const toScale = Number(to.dataset.pageScale) || 1;
+    to.scrollTop = from.scrollTop * toScale / fromScale;
+    to.scrollLeft = from.scrollLeft * toScale / fromScale;
     requestAnimationFrame(() => { syncing.current = false; });
   };
   const capture = () => {
@@ -191,13 +201,14 @@ export function PdfParallelReader() {
   const marks = activePaper?.pdfHighlights?.filter((h) => h.pageNumber === previewPage) ?? [];
   const jumpToRegion = (region: PageRegion) => {
     setSelected(region.id);
-    const top = Math.max(0, region.y * scale - 80);
-    leftScroll.current?.scrollTo({ top, behavior: "smooth" }); rightScroll.current?.scrollTo({ top, behavior: "smooth" });
+    leftScroll.current?.scrollTo({ top: Math.max(0, region.y * scales[0] - 80), behavior: "smooth" });
+    rightScroll.current?.scrollTo({ top: Math.max(0, region.y * scales[1] - 80), behavior: "smooth" });
   };
 
-  return <div className="space-y-3">
-    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card px-4 py-3">
-      <div className="flex items-center gap-2">
+  return <div ref={readerRoot} data-reader-focus={readerFocus} className={readerFocus ? "fixed inset-0 z-40 overflow-auto bg-background p-2 sm:p-3" : "space-y-1.5"}>
+    <div data-reader-controls="true" className="space-y-1.5">
+    <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-card px-2 py-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
         <label className="mr-2 flex items-center gap-1.5 text-xs text-muted-foreground"><input type="checkbox" checked={autoTranslate} onChange={(e) => {
           setAutoTranslate(e.target.checked);
           try { localStorage.setItem("paper-rag:pdf-auto-translate", String(e.target.checked)); } catch { /* Keep the session preference. */ }
@@ -211,6 +222,9 @@ export function PdfParallelReader() {
         <Button size="icon" variant="ghost" aria-label="放大两侧页面" disabled={zoom >= 2.5} onClick={() => setZoom((z) => z + .25)}><Plus className="h-4 w-4" /></Button>
       </div>
       <div className="flex items-center gap-2">
+        <Button size="sm" variant="outline" onClick={() => readerToggleFocus(!readerFocus)}>{readerFocus ? <Minimize2 className="mr-1 h-3.5 w-3.5" /> : <Maximize2 className="mr-1 h-3.5 w-3.5" />}{readerFocus ? "退出专注" : "专注阅读"}</Button>
+        <Button size="icon" variant="ghost" aria-label="重置阅读布局" title="恢复等宽、充满高度及默认缩放" onClick={() => { readerReset(); setZoom(1); }}><RotateCcw className="h-3.5 w-3.5" /></Button>
+        {onTextMode && <Button size="sm" variant="ghost" className="hidden xl:inline-flex" onClick={onTextMode}>文本精读</Button>}
         <Button size="sm" variant="ghost" onClick={() => setGlossaryOpen((v) => !v)}>术语约定</Button>
         {busy ? <Button size="sm" variant="outline" onClick={() => request.current?.abort()}>取消翻译</Button>
           : <Button size="sm" disabled={!layout || !total || translatedCount === total} onClick={() => void translate()}><Languages className="mr-2 h-4 w-4" />{translatedCount > 0 && translatedCount < total ? "继续翻译本页" : translatedCount === total && total ? "本页已翻译" : "翻译本页 · 保留版式"}</Button>}
@@ -219,7 +233,7 @@ export function PdfParallelReader() {
     {glossaryOpen && <div className="rounded-lg border bg-card p-4"><label htmlFor="layout-glossary" className="mb-2 block text-sm font-medium">本篇论文的术语约定</label><Textarea id="layout-glossary" value={glossary} maxLength={3000} onChange={(e) => setGlossary(e.target.value)} placeholder="cavitation = 空化" /><Button className="mt-2" size="sm" onClick={() => { updatePaper(activePaper!.id, { translationGlossary: glossary }); toast.success("已保存，用于后续翻译"); }}>保存术语</Button></div>}
     <div className="flex flex-wrap items-center justify-between gap-2 px-1 text-xs text-muted-foreground">
       <span>{busy ? <span className="flex items-center gap-2"><Loader2 className="h-3.5 w-3.5 animate-spin" />正在翻译文字区域 {progress[0]}/{progress[1]}</span> : <span className="flex items-center gap-1"><Check className="h-3.5 w-3.5" />原页图像与文字区域对齐 · 已翻译 {translatedCount}/{total}</span>}</span>
-      <span>同步滚动与缩放 · 左侧划选高亮 · 点击右侧译文修改</span>
+      <div className="flex flex-wrap items-center gap-3"><span className="hidden lg:inline">拖动中线调宽 · 拖动底边调高 · 双击恢复</span><label className="flex items-center gap-1">高度<select aria-label="阅读区高度" className="rounded border bg-background px-1 py-0.5" value={Math.round(readerHeightRatio * 100)} onChange={(e) => readerSetHeight(Number(e.target.value) / 100)}>{![100, 85, 70].includes(Math.round(readerHeightRatio * 100)) && <option value={Math.round(readerHeightRatio * 100)}>{Math.round(readerHeightRatio * 100)}%</option>}<option value="100">充满屏幕</option><option value="85">85%</option><option value="70">70%</option></select></label><span className="tabular-nums">原文 {Math.round(readerSplit)}% / 译文 {Math.round(100 - readerSplit)}%</span></div>
     </div>
     {error && <p role="alert" className="rounded-lg border border-destructive/25 bg-destructive/5 p-3 text-sm text-destructive">{error}</p>}
     {layout && !total && <p className="rounded-lg border bg-card p-3 text-sm">此页没有可翻译的文本层。原始图像已保留；扫描页需要先经过 OCR。</p>}
@@ -229,13 +243,14 @@ export function PdfParallelReader() {
       updatePaper(paper.id, { pdfHighlights: [...(paper.pdfHighlights ?? []), { id: crypto.randomUUID(), pageNumber: previewPage, ...selection }] });
       setSelection(null); window.getSelection()?.removeAllRanges();
     }}><Highlighter className="mr-1 h-4 w-4" />高亮所选语句</Button><Button size="sm" variant="ghost" onClick={() => setSelection(null)}>取消</Button></div>}
-    <div className="grid grid-cols-2 gap-3 overflow-x-auto rounded-xl border bg-slate-100/70 p-3 dark:bg-muted/30" data-pdf-parallel="true">
-      {[false, true].map((right) => <section key={String(right)} className="min-w-0" ref={right ? undefined : column}>
-        <div className="mb-3 flex items-center justify-between px-1 text-sm font-medium"><span>{right ? "中文译文 · 原版对照" : "论文原文 · 原始 PDF"}</span><span className="text-xs font-normal text-muted-foreground">第 {previewPage} 页</span></div>
-        <div ref={right ? rightScroll : leftScroll} data-pdf-pane={right ? "translation" : "source"} className="h-[calc(100dvh-330px)] min-h-[460px] overflow-auto overscroll-contain rounded-md bg-slate-200/40 p-4 dark:bg-muted/50"
+    </div>
+    <div ref={readerStage} className="grid rounded-lg border bg-slate-100/70 p-1.5 dark:bg-muted/30" style={{ height: readerHeight, gridTemplateColumns: `minmax(0, ${readerSplit}fr) 14px minmax(0, ${100 - readerSplit}fr)` }} data-pdf-parallel="true">
+      {[false, true].map((right) => { const pageScale = scales[right ? 1 : 0]; return <Fragment key={String(right)}><section className="flex min-h-0 min-w-0 flex-col" ref={right ? readerRightColumn : readerLeftColumn}>
+        <div className="flex h-7 shrink-0 items-center justify-between gap-1 px-1 text-xs font-medium"><span className="truncate">{right ? "中文译文 · 原版对照" : "论文原文 · 原始 PDF"}</span><span className="shrink-0 font-normal text-muted-foreground">第 {previewPage} 页</span></div>
+        <div ref={right ? rightScroll : leftScroll} data-pdf-pane={right ? "translation" : "source"} data-page-scale={pageScale} className="min-h-0 flex-1 overflow-auto overscroll-contain rounded bg-slate-200/40 p-2 dark:bg-muted/50"
           onScroll={(e) => sync(e.currentTarget, right ? leftScroll.current : rightScroll.current)}>
-          <div style={{ width: layout ? layout.width * scale : "100%", height: layout ? layout.height * scale : 760, position: "relative", margin: "0 auto" }}>
-            <div ref={right ? undefined : sheet} className="absolute left-0 top-0 origin-top-left bg-white text-black shadow-lg" style={{ width: layout?.width ?? 612, height: layout?.height ?? 792, transform: `scale(${scale})` }} onMouseUp={right ? undefined : capture} onKeyUp={right ? undefined : (e) => { if (e.key === "Shift") capture(); }}>
+          <div style={{ width: layout ? layout.width * pageScale : "100%", height: layout ? layout.height * pageScale : 760, position: "relative", margin: "0 auto" }}>
+            <div ref={right ? undefined : sheet} className="absolute left-0 top-0 origin-top-left bg-white text-black shadow-lg" style={{ width: layout?.width ?? 612, height: layout?.height ?? 792, transform: `scale(${pageScale})` }} onMouseUp={right ? undefined : capture} onKeyUp={right ? undefined : (e) => { if (e.key === "Shift") capture(); }}>
               <canvas ref={right ? translated : original} className="absolute inset-0 h-full w-full" aria-label={`${right ? "译文" : "原文"} PDF 第 ${previewPage} 页背景`} />
               {!layout && <div className="absolute inset-0 flex items-center justify-center gap-2 bg-white/90 text-sm text-slate-600"><Loader2 className="h-4 w-4 animate-spin" />正在还原 PDF 页面…</div>}
               {fitted.map(({ region, fit }) => {
@@ -258,9 +273,17 @@ export function PdfParallelReader() {
             </div>
           </div>
         </div>
-      </section>)}
+      </section>{!right && <div role="separator" tabIndex={0} aria-label="调整原文与译文宽度" aria-orientation="vertical" aria-valuemin={25} aria-valuemax={75} aria-valuenow={Math.round(readerSplit)}
+        className="group flex touch-none select-none items-center justify-center rounded cursor-col-resize hover:bg-primary/10 focus-visible:outline-2 focus-visible:outline-primary" title="左右拖动调整栏宽；双击恢复等宽；方向键微调"
+        onPointerDown={(e) => readerStartDrag(e, "split")} onPointerMove={readerMoveDrag} onPointerUp={readerStopDrag} onPointerCancel={readerStopDrag} onLostPointerCapture={readerStopDrag} onDoubleClick={() => readerSetSplit(50)}
+        onKeyDown={(e) => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); readerSetSplit(readerSplit + (e.key === "ArrowLeft" ? -2 : 2)); } if (e.key === "Home") readerSetSplit(50); }}>
+        <GripVertical className="h-8 w-3 text-muted-foreground/60 group-hover:text-primary" />
+      </div>}</Fragment>; })}
     </div>
-    <p className="px-1 text-xs leading-relaxed text-muted-foreground">图片、图表、公式与原页背景保留。未翻译区域继续显示原文；复杂旋转文字和无法可靠识别的公式保持原样。双语 PDF 排版译文与旧的文本精读译文分别保存。</p>
+    <div role="separator" aria-label="调整阅读区高度" aria-orientation="horizontal" aria-valuemin={45} aria-valuemax={100} aria-valuenow={Math.round(readerHeightRatio * 100)} tabIndex={0}
+      className="flex h-4 touch-none select-none cursor-row-resize items-center justify-center rounded hover:bg-primary/10 focus-visible:outline-2 focus-visible:outline-primary" title="上下拖动调整阅读高度；双击充满可用空间"
+      onPointerDown={(e) => readerStartDrag(e, "height")} onPointerMove={readerMoveDrag} onPointerUp={readerStopDrag} onPointerCancel={readerStopDrag} onLostPointerCapture={readerStopDrag} onDoubleClick={() => readerSetHeight(1)}
+      onKeyDown={(e) => { if (e.key === "ArrowUp" || e.key === "ArrowDown") { e.preventDefault(); readerSetHeight(readerHeightRatio + (e.key === "ArrowUp" ? -.05 : .05)); } if (e.key === "Home") readerSetHeight(1); }}><span className="h-1 w-12 rounded-full bg-muted-foreground/30" /></div>
     {editing && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-5" onClick={() => setEditing(null)}>
       <section role="dialog" aria-modal="true" aria-label="编辑对应区域译文" className="w-full max-w-2xl rounded-2xl border bg-card p-6 shadow-2xl" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => { if (e.key === "Escape") setEditing(null); }}>
         <div className="mb-4 flex items-center justify-between"><h2 className="font-semibold">第 {previewPage} 页 · 对应区域译文</h2><Button size="icon" variant="ghost" aria-label="关闭译文编辑" onClick={() => setEditing(null)}><X className="h-4 w-4" /></Button></div>

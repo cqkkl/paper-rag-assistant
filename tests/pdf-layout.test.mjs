@@ -7,13 +7,65 @@ import ts from 'typescript';
 const source = await readFile(new URL('../src/lib/pdfLayout.ts', import.meta.url), 'utf8');
 const module = new vm.SourceTextModule(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText);
 await module.link(() => {}); await module.evaluate();
-const { groupPageLines, fitRegionText } = module.namespace;
+const { groupPageLines, groupPageLinesLegacy, migrateParagraphTranslations, fitRegionText } = module.namespace;
 const line = (text, x, y, width = 240) => ({ text, x, y, width, height: 11, fontSize: 11, bold: false });
 test('two-column text remains in distinct regions', () => {
   const regions = groupPageLines([line('Left first', 42, 100), line('Right first', 322, 100), line('Left second', 42, 114), line('Right second', 322, 114)], 612);
   assert.equal(regions.length, 2);
   assert.equal(regions[0].text, 'Left first Left second');
   assert.equal(regions[1].text, 'Right first Right second');
+});
+
+test('inline colored links, font changes and indents remain one readable paragraph', () => {
+  const input = [
+    line('Researchers compare scientific systems with an original method.', 52, 100, 230),
+    line('They inspect the ', 42, 114, 85),
+    {...line('open-source', 127, 114, 60), color:'rgb(0,100,255)', bold:true},
+    line(' platform carefully.', 187, 114, 95),
+    line('The corresponding source remains visible for verification.', 42, 128, 240),
+    line('This is a separate indented paragraph with its own context.', 52, 142, 230),
+    line('It must not be attached to the preceding paragraph.', 42, 156, 240),
+  ];
+  const regions=groupPageLines(input,612);
+  assert.equal(regions.length,2);
+  assert.ok(regions[0].text.includes('open-source platform'));
+  assert.equal(regions[0].color,'#27313c');
+  assert.equal(regions[0].textIndent,10);
+});
+
+test('list markers stay with their text and continuation lines use hanging indent', () => {
+  const input=[line('•',42,100,4),line('Design of a low-power configurable ultrasound platform.',54,100,228),
+    line('It supports multiple transducers and programmable settings.',54,114,228),
+    line('•',42,135,4),line('Expanded modes include A-mode, M-mode and B-mode.',54,135,228),
+    line('The measurements can be verified in the original document.',54,149,228)];
+  const regions=groupPageLines(input,612);
+  assert.equal(regions.length,2);
+  assert.ok(regions.every((r)=>r.kind==='list'&&r.lines.length===2));
+  const fit=fitRegionText('• 设计一种可编程超声平台，支持不同换能器。',regions[0],(text,size)=>text.length*size);
+  assert.ok(fit.hangingIndent>0);
+  assert.ok(!fit.lines.join('').startsWith('•'));
+});
+
+test('short final line joins its paragraph without inheriting colored link styles', () => {
+  const input=[line('These systems support multiple transducer configurations.',42,100,240),
+    line('and programmable settings in clinical research.',42,114,240),
+    {...line('community.',42,128,47),color:'rgb(250,100,0)'},
+    line('A separate paragraph begins below the preceding discussion.',52,150,230),line('It has its own independent set of source citations.',42,164,240)];
+  const regions=groupPageLines(input,612);
+  assert.equal(regions.length,2);
+  assert.ok(regions[0].text.endsWith('community.'));
+  assert.equal(regions[0].color,'#27313c');
+});
+
+test('legacy translation fragments migrate into the corresponding paragraph once', () => {
+  const input=[line('The system supports multiple independent applications.',52,100,230),
+    {...line('Community.',42,114,50),bold:true},line('Clinical research requires source verification.',95,114,185),
+    line('Every conclusion is connected to the original page.',42,128,240)];
+  const old=groupPageLinesLegacy(input,612);const next=groupPageLines(input,612);
+  const values=Object.fromEntries(old.filter((r)=>!r.preserve).map((r,i)=>[r.id,`旧译文${i}`]));
+  const migrated=migrateParagraphTranslations(next,old,values);
+  assert.equal(Object.keys(migrated).length,next.length);
+  for(const value of Object.values(values)) assert.equal(Object.values(migrated).join('').split(value).length-1,1);
 });
 test('table cells, captions, numeric labels and equations remain isolated', () => {
   const regions = groupPageLines([line('Method', 322, 100, 40), line('Score', 458, 100, 30), line('0.89', 458, 135, 30), line('E = mc^2 + x_1', 322, 200, 120)], 612);

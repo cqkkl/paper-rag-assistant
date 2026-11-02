@@ -46,6 +46,13 @@ export interface IChatCitation {
   score: number;
 }
 
+export interface ILayoutTranslationCache {
+  version: number;
+  sourceKey: string;
+  regions: Record<string, string>;
+  previous?: { version: number; sourceKey: string; regions: Record<string, string> };
+}
+
 // 文献类型定义
 export interface IPaper {
   id: string;
@@ -68,7 +75,7 @@ export interface IPaper {
   aiExtractedAbstract?: string;
   translations?: Record<number, string>;
   translationGlossary?: string;
-  layoutTranslations?: Record<number, { version: number; sourceKey: string; regions: Record<string, string> }>;
+  layoutTranslations?: Record<number, ILayoutTranslationCache>;
   pdfHighlights?: Array<{ id: string; pageNumber: number; text: string; rects: Array<{ x: number; y: number; width: number; height: number }> }>;
   translationClips?: Array<{ id: string; pageNumber: number; source: string; translation: string; target: "zh" | "en"; createdAt: number }>;
   highlights?: IPaperHighlight[];

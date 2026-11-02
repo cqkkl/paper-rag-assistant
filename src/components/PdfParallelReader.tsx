@@ -7,12 +7,12 @@ import { Textarea } from "@/components/ui/textarea";
 import { usePaper } from "@/contexts/PaperContext";
 import { useApiKeyStatus } from "@/hooks/use-api-key-status";
 import { useReaderSizing } from "@/hooks/use-reader-sizing";
-import { groupPageLines, fitRegionText, type PageLine, type PageRegion } from "@/lib/pdfLayout";
+import { groupPageLines, groupPageLinesLegacy, migrateParagraphTranslations, fitRegionText, type PageLine, type PageRegion } from "@/lib/pdfLayout";
 import { translateRegions } from "@/lib/layoutTranslation";
 import { toast } from "sonner";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
-const VERSION = 1;
+const VERSION = 2;
 
 export function PdfParallelReader({ onTextMode }: { onTextMode?: () => void }) {
   const { activePaper, previewPage, openPage, updatePaper } = usePaper();
@@ -34,7 +34,7 @@ export function PdfParallelReader({ onTextMode }: { onTextMode?: () => void }) {
   } = useReaderSizing();
   const syncing = useRef(false);
   const request = useRef<AbortController | null>(null);
-  const [layout, setLayout] = useState<{ width: number; height: number; regions: PageRegion[]; sourceKey: string } | null>(null);
+  const [layout, setLayout] = useState<{ width: number; height: number; regions: PageRegion[]; sourceKey: string; legacyKey: string; legacyRegions: PageRegion[] } | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState([0, 0]);
@@ -51,7 +51,20 @@ export function PdfParallelReader({ onTextMode }: { onTextMode?: () => void }) {
   const [glossary, setGlossary] = useState(activePaper?.translationGlossary ?? "");
   const [selection, setSelection] = useState<{ text: string; rects: Array<{ x: number; y: number; width: number; height: number }> } | null>(null);
   const stored = activePaper?.layoutTranslations?.[previewPage];
-  const values = useMemo(() => stored?.version === VERSION && stored.sourceKey === layout?.sourceKey ? stored.regions : {}, [stored, layout]);
+  const values = useMemo(() => {
+    if (!stored || !layout) return {};
+    if (stored.version === VERSION && stored.sourceKey === layout.sourceKey) return stored.regions;
+    if (stored.version === 1 && stored.sourceKey === layout.legacyKey) return migrateParagraphTranslations(layout.regions, layout.legacyRegions, stored.regions);
+    return {};
+  }, [stored, layout]);
+  useEffect(() => {
+    const paper = latest.current;
+    if (!paper || !layout || stored?.version !== 1 || stored.sourceKey !== layout.legacyKey) return;
+    updatePaper(paper.id, { layoutTranslations: { ...paper.layoutTranslations, [previewPage]: {
+      version: VERSION, sourceKey: layout.sourceKey, regions: values,
+      previous: { version: stored.version, sourceKey: stored.sourceKey, regions: stored.regions },
+    } } });
+  }, [layout, stored, values, previewPage, updatePaper]);
   const scales = readerWidths.map((width) => layout ? Math.min(width / layout.width, 1.8) * zoom : 1);
   const scale = scales[0];
 
@@ -129,7 +142,10 @@ export function PdfParallelReader({ onTextMode }: { onTextMode?: () => void }) {
           }
         }
         const regions = groupPageLines(lines, viewport.width);
+        const legacyRegions = groupPageLinesLegacy(lines, viewport.width);
+        const legacyKey = `1:${viewport.width}:${viewport.height}:${legacyRegions.map((r) => `${r.id}:${r.x}:${r.y}:${r.text}`).join("|")}`;
         setLayout({ width: viewport.width, height: viewport.height, regions,
+          legacyKey, legacyRegions,
           sourceKey: `${VERSION}:${viewport.width}:${viewport.height}:${regions.map((r) => `${r.id}:${r.x}:${r.y}:${r.text}`).join("|")}` });
       } catch (err) {
         if (!disposed) setError(err instanceof Error ? err.message : "无法载入 PDF 页面");
@@ -150,7 +166,7 @@ export function PdfParallelReader({ onTextMode }: { onTextMode?: () => void }) {
     const paper = latest.current;
     if (!paper || !layout) return;
     updatePaper(paper.id, { layoutTranslations: { ...paper.layoutTranslations,
-      [previewPage]: { version: VERSION, sourceKey: layout.sourceKey, regions } } });
+      [previewPage]: { version: VERSION, sourceKey: layout.sourceKey, regions, previous: paper.layoutTranslations?.[previewPage]?.previous } } });
   }, [layout, previewPage, updatePaper]);
   const translate = useCallback(async () => {
     if (!layout || busy) return;
@@ -254,6 +270,7 @@ export function PdfParallelReader({ onTextMode }: { onTextMode?: () => void }) {
             <div ref={right ? undefined : sheet} className="absolute left-0 top-0 origin-top-left bg-white text-black shadow-lg" style={{ width: layout?.width ?? 612, height: layout?.height ?? 792, transform: `scale(${pageScale})` }} onMouseUp={right ? undefined : capture} onKeyUp={right ? undefined : (e) => { if (e.key === "Shift") capture(); }}>
               <canvas ref={right ? translated : original} className="absolute inset-0 h-full w-full" aria-label={`${right ? "译文" : "原文"} PDF 第 ${previewPage} 页背景`} />
               {!layout && <div className="absolute inset-0 flex items-center justify-center gap-2 bg-white/90 text-sm text-slate-600"><Loader2 className="h-4 w-4 animate-spin" />正在还原 PDF 页面…</div>}
+              {right && fitted.flatMap(({ region, fit }) => fit ? region.lines.map((line, i) => <span key={`mask-${region.id}-${i}`} aria-hidden="true" style={{ position: "absolute", left: line.x - 1, top: line.y - line.fontSize * .16, width: line.width + 2, height: line.height + line.fontSize * .32, background: line.background ?? "white", pointerEvents: "none" }} />) : [])}
               {fitted.map(({ region, fit }) => {
                 const common = { position: "absolute" as const, left: region.x, top: region.y, width: region.width, height: region.height };
                 if (!right) return <span key={region.id} data-source-region={region.id} style={{ ...common, color: "transparent", fontSize: region.fontSize, lineHeight: 1, cursor: "text", outline: selected === region.id ? "1px solid #60a5fa" : undefined }} onClick={() => setSelected(region.id)}>
@@ -261,11 +278,14 @@ export function PdfParallelReader({ onTextMode }: { onTextMode?: () => void }) {
                 </span>;
                 if (!fit) return null;
                 return <div key={region.id}>
-                  {region.lines.map((line, i) => <span key={i} aria-hidden="true" style={{ position: "absolute", left: line.x - 1, top: line.y - line.fontSize * .16, width: line.width + 2, height: line.height + line.fontSize * .32, background: line.background ?? "white" }} />)}
                   <button data-translated-region={region.id} disabled={busy} title={busy ? "翻译完成后可修改" : "点击编辑完整译文"} onClick={() => { jumpToRegion(region); setEditing(region); setDraft(values[region.id]); }}
                     className="m-0 cursor-text border-0 bg-transparent p-0 text-left hover:outline hover:outline-1 hover:outline-blue-400"
-                    style={{ ...common, height: region.height + region.fontSize * .18, color: region.color ?? "black", fontFamily: '"Noto Serif SC", "SimSun", serif', fontWeight: region.bold ? 600 : 400, fontSize: fit.fontSize, lineHeight: `${fit.fontSize * 1.14}px`, whiteSpace: "pre", overflow: "hidden", outline: fit.overflow ? "1px solid #f59e0b" : selected === region.id ? "1px solid #60a5fa" : undefined }}>
-                    {fit.lines.join("\n")}
+                    data-region-kind={region.kind} style={{ ...common, display: "flex", flexDirection: "column", justifyContent: "flex-start", alignItems: "stretch", height: region.height + region.fontSize * .18, color: region.color ?? "#27313c", fontFamily: '"Noto Serif SC", "SimSun", serif', fontWeight: region.bold ? 600 : 400, fontSize: fit.fontSize, lineHeight: `${fit.lineHeight}px`, whiteSpace: "normal", overflow: "hidden", outline: fit.overflow ? "1px solid #f59e0b" : selected === region.id ? "1px solid #60a5fa" : undefined }}>
+                    {region.marker && <span aria-hidden="true" style={{ position: "absolute", left: 0, top: 0 }}>{/[•●▪‣◦-]/.test(region.marker) ? "•" : region.marker}</span>}
+                    <span style={{ display: "block", paddingLeft: fit.hangingIndent }}>
+                      {fit.lines.map((line, index) => <span key={index} style={{ display: "block", height: fit.lineHeight, marginLeft: index === 0 && !region.marker ? region.textIndent ?? 0 : 0,
+                        whiteSpace: "pre", textAlign: region.kind === "paragraph" && index < fit.lines.length - 1 ? "justify" : "left", textAlignLast: region.kind === "paragraph" && index < fit.lines.length - 1 ? "justify" : "auto" }}>{line}</span>)}
+                    </span>
                   </button>
                 </div>;
               })}

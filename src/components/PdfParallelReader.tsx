@@ -7,12 +7,12 @@ import { Textarea } from "@/components/ui/textarea";
 import { usePaper } from "@/contexts/PaperContext";
 import { useApiKeyStatus } from "@/hooks/use-api-key-status";
 import { useReaderSizing } from "@/hooks/use-reader-sizing";
-import { groupPageLines, groupPageLinesLegacy, migrateParagraphTranslations, fitRegionText, type PageLine, type PageRegion } from "@/lib/pdfLayout";
+import { detectColumnGutter, groupPageLines, groupPageLinesLegacy, migrateParagraphTranslations, fitRegionText, type PageLine, type PageRegion } from "@/lib/pdfLayout";
 import { translateRegions } from "@/lib/layoutTranslation";
 import { toast } from "sonner";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
-const VERSION = 2;
+const VERSION = 3;
 
 export function PdfParallelReader({ onTextMode }: { onTextMode?: () => void }) {
   const { activePaper, previewPage, openPage, updatePaper } = usePaper();
@@ -54,15 +54,17 @@ export function PdfParallelReader({ onTextMode }: { onTextMode?: () => void }) {
   const values = useMemo(() => {
     if (!stored || !layout) return {};
     if (stored.version === VERSION && stored.sourceKey === layout.sourceKey) return stored.regions;
-    if (stored.version === 1 && stored.sourceKey === layout.legacyKey) return migrateParagraphTranslations(layout.regions, layout.legacyRegions, stored.regions);
+    const safeBackup = [stored, stored.previous, ...(stored.history ?? [])].find((cache) => cache?.version === 1 && cache.sourceKey === layout.legacyKey);
+    if (safeBackup) return migrateParagraphTranslations(layout.regions, layout.legacyRegions, safeBackup.regions);
     return {};
   }, [stored, layout]);
   useEffect(() => {
     const paper = latest.current;
-    if (!paper || !layout || stored?.version !== 1 || stored.sourceKey !== layout.legacyKey) return;
+    if (!paper || !layout || !stored || stored.version === VERSION) return;
     updatePaper(paper.id, { layoutTranslations: { ...paper.layoutTranslations, [previewPage]: {
       version: VERSION, sourceKey: layout.sourceKey, regions: values,
       previous: { version: stored.version, sourceKey: stored.sourceKey, regions: stored.regions },
+      history: [stored.previous, ...(stored.history ?? [])].filter((cache) => !!cache).slice(0, 3),
     } } });
   }, [layout, stored, values, previewPage, updatePaper]);
   const scales = readerWidths.map((width) => layout ? Math.min(width / layout.width, 1.8) * zoom : 1);
@@ -142,8 +144,11 @@ export function PdfParallelReader({ onTextMode }: { onTextMode?: () => void }) {
           }
         }
         const regions = groupPageLines(lines, viewport.width);
-        const legacyRegions = groupPageLinesLegacy(lines, viewport.width);
-        const legacyKey = `1:${viewport.width}:${viewport.height}:${legacyRegions.map((r) => `${r.id}:${r.x}:${r.y}:${r.text}`).join("|")}`;
+        const allLegacyRegions = groupPageLinesLegacy(lines, viewport.width);
+        const legacyKey = `1:${viewport.width}:${viewport.height}:${allLegacyRegions.map((r) => `${r.id}:${r.x}:${r.y}:${r.text}`).join("|")}`;
+        const gutter = detectColumnGutter(lines, viewport.width);
+        const legacyRegions = allLegacyRegions.filter((region) => gutter === null || region.lines.every((line) => line.x + line.width <= gutter) || region.lines.every((line) => line.x >= gutter)
+          || regions.some((next) => next.column === "wide" && region.x >= next.x && region.x + region.width <= next.x + next.width && region.y >= next.y && region.y + region.height <= next.y + next.height));
         setLayout({ width: viewport.width, height: viewport.height, regions,
           legacyKey, legacyRegions,
           sourceKey: `${VERSION}:${viewport.width}:${viewport.height}:${regions.map((r) => `${r.id}:${r.x}:${r.y}:${r.text}`).join("|")}` });
@@ -166,7 +171,7 @@ export function PdfParallelReader({ onTextMode }: { onTextMode?: () => void }) {
     const paper = latest.current;
     if (!paper || !layout) return;
     updatePaper(paper.id, { layoutTranslations: { ...paper.layoutTranslations,
-      [previewPage]: { version: VERSION, sourceKey: layout.sourceKey, regions, previous: paper.layoutTranslations?.[previewPage]?.previous } } });
+      [previewPage]: { version: VERSION, sourceKey: layout.sourceKey, regions, previous: paper.layoutTranslations?.[previewPage]?.previous, history: paper.layoutTranslations?.[previewPage]?.history } } });
   }, [layout, previewPage, updatePaper]);
   const translate = useCallback(async () => {
     if (!layout || busy) return;
@@ -250,9 +255,10 @@ export function PdfParallelReader({ onTextMode }: { onTextMode?: () => void }) {
     {glossaryOpen && <div className="rounded-lg border bg-card p-4"><label htmlFor="layout-glossary" className="mb-2 block text-sm font-medium">本篇论文的术语约定</label><Textarea id="layout-glossary" value={glossary} maxLength={3000} onChange={(e) => setGlossary(e.target.value)} placeholder="cavitation = 空化" /><Button className="mt-2" size="sm" onClick={() => { updatePaper(activePaper!.id, { translationGlossary: glossary }); toast.success("已保存，用于后续翻译"); }}>保存术语</Button></div>}
     <div className="flex flex-wrap items-center justify-between gap-2 px-1 text-xs text-muted-foreground">
       <span>{busy ? <span className="flex items-center gap-2"><Loader2 className="h-3.5 w-3.5 animate-spin" />{repairing ? "正在自动补译缺失区域" : "正在逐区翻译"} {progress[0]}/{progress[1]}</span> : <span className="flex items-center gap-1">{total > 0 && translatedCount === total ? <Check className="h-3.5 w-3.5" /> : <Languages className="h-3.5 w-3.5" />}已翻译 {translatedCount}/{total}{translatedCount < total && " · 未完成区域暂显原文"}</span>}</span>
-      <div className="flex flex-wrap items-center gap-3"><span className="hidden lg:inline">拖动中线调宽 · 拖动底边调高 · 双击恢复</span><label className="flex items-center gap-1">高度<select aria-label="阅读区高度" className="rounded border bg-background px-1 py-0.5" value={Math.round(readerHeightRatio * 100)} onChange={(e) => readerSetHeight(Number(e.target.value) / 100)}>{![100, 85, 70].includes(Math.round(readerHeightRatio * 100)) && <option value={Math.round(readerHeightRatio * 100)}>{Math.round(readerHeightRatio * 100)}%</option>}<option value="100">充满屏幕</option><option value="85">85%</option><option value="70">70%</option></select></label><span className="tabular-nums">原文 {Math.round(readerSplit)}% / 译文 {Math.round(100 - readerSplit)}%</span></div>
+      <div className="flex flex-wrap items-center gap-3"><span className="hidden lg:inline">字号跟随原文 · 拖动中线调宽 · 双击恢复</span><label className="flex items-center gap-1">高度<select aria-label="阅读区高度" className="rounded border bg-background px-1 py-0.5" value={Math.round(readerHeightRatio * 100)} onChange={(e) => readerSetHeight(Number(e.target.value) / 100)}>{![100, 85, 70].includes(Math.round(readerHeightRatio * 100)) && <option value={Math.round(readerHeightRatio * 100)}>{Math.round(readerHeightRatio * 100)}%</option>}<option value="100">充满屏幕</option><option value="85">85%</option><option value="70">70%</option></select></label><span className="tabular-nums">原文 {Math.round(readerSplit)}% / 译文 {Math.round(100 - readerSplit)}%</span></div>
     </div>
     {error && <p role="alert" className="rounded-lg border border-destructive/25 bg-destructive/5 p-3 text-sm text-destructive">{error}</p>}
+    {stored?.previous?.version === 2 && translatedCount < total && <p className="rounded-lg border bg-card px-3 py-2 text-xs text-muted-foreground">已隔离上一版可能串栏的译文缓存。请继续翻译待完成区域，重新生成逐栏对应的译文；原缓存已备份。</p>}
     {layout && !total && <p className="rounded-lg border bg-card p-3 text-sm">此页没有可翻译的文本层。原始图像已保留；扫描页需要先经过 OCR。</p>}
     {overflow > 0 && <p className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">{overflow} 个区域译文较长，已用橙色边框标出。点击区域查看完整译文并修订。</p>}
     {selection && <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-card px-4 py-2 text-sm"><span className="max-w-lg truncate">{selection.text}</span><Button size="sm" variant="secondary" onClick={() => {
@@ -280,7 +286,7 @@ export function PdfParallelReader({ onTextMode }: { onTextMode?: () => void }) {
                 return <div key={region.id}>
                   <button data-translated-region={region.id} disabled={busy} title={busy ? "翻译完成后可修改" : "点击编辑完整译文"} onClick={() => { jumpToRegion(region); setEditing(region); setDraft(values[region.id]); }}
                     className="m-0 cursor-text border-0 bg-transparent p-0 text-left hover:outline hover:outline-1 hover:outline-blue-400"
-                    data-region-kind={region.kind} style={{ ...common, display: "flex", flexDirection: "column", justifyContent: "flex-start", alignItems: "stretch", height: region.height + region.fontSize * .18, color: region.color ?? "#27313c", fontFamily: '"Noto Serif SC", "SimSun", serif', fontWeight: region.bold ? 600 : 400, fontSize: fit.fontSize, lineHeight: `${fit.lineHeight}px`, whiteSpace: "normal", overflow: "hidden", outline: fit.overflow ? "1px solid #f59e0b" : selected === region.id ? "1px solid #60a5fa" : undefined }}>
+                    data-region-kind={region.kind} data-source-font-size={region.fontSize} style={{ ...common, display: "flex", flexDirection: "column", justifyContent: "flex-start", alignItems: "stretch", height: region.height + region.fontSize * .25, color: region.color ?? "#27313c", fontFamily: '"Noto Serif SC", "SimSun", serif', fontWeight: region.bold ? 600 : 400, fontSize: fit.fontSize, lineHeight: `${fit.lineHeight}px`, whiteSpace: "normal", overflow: "hidden", outline: fit.overflow ? "1px solid #f59e0b" : selected === region.id ? "1px solid #60a5fa" : undefined }}>
                     {region.marker && <span aria-hidden="true" style={{ position: "absolute", left: 0, top: 0 }}>{/[•●▪‣◦-]/.test(region.marker) ? "•" : region.marker}</span>}
                     <span style={{ display: "block", paddingLeft: fit.hangingIndent }}>
                       {fit.lines.map((line, index) => <span key={index} style={{ display: "block", height: fit.lineHeight, marginLeft: index === 0 && !region.marker ? region.textIndent ?? 0 : 0,
@@ -310,7 +316,7 @@ export function PdfParallelReader({ onTextMode }: { onTextMode?: () => void }) {
         <div className="mb-4 flex items-center justify-between"><h2 className="font-semibold">第 {previewPage} 页 · 对应区域译文</h2><Button size="icon" variant="ghost" aria-label="关闭译文编辑" onClick={() => setEditing(null)}><X className="h-4 w-4" /></Button></div>
         <p className="mb-4 max-h-40 overflow-auto rounded-lg bg-muted p-3 text-sm leading-relaxed">{editing.text}</p>
         <Textarea autoFocus aria-label="对应区域译文" className="min-h-40 leading-relaxed" value={draft} onChange={(e) => setDraft(e.target.value)} />
-        <p className="mt-2 text-xs text-muted-foreground">保存后按原位置重新适配字号与行距。译文较长时可放大页面阅读。</p>
+        <p className="mt-2 text-xs text-muted-foreground">字号与对应原文一致，保存后在原区域换行。过长内容会标记，可在此查看完整译文。</p>
         <div className="mt-4 flex justify-end gap-2"><Button variant="outline" onClick={() => setEditing(null)}>取消</Button><Button disabled={!draft.trim()} onClick={() => { saveValues({ ...values, [editing.id]: draft.trim() }); setEditing(null); toast.success("译文已保存并回填原位"); }}>保存并回填</Button></div>
       </section>
     </div>}

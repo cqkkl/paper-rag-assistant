@@ -7,13 +7,73 @@ import ts from 'typescript';
 const source = await readFile(new URL('../src/lib/pdfLayout.ts', import.meta.url), 'utf8');
 const module = new vm.SourceTextModule(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText);
 await module.link(() => {}); await module.evaluate();
-const { groupPageLines, groupPageLinesLegacy, migrateParagraphTranslations, fitRegionText } = module.namespace;
+const { detectColumnGutter, groupPageLines, groupPageLinesLegacy, migrateParagraphTranslations, fitRegionText } = module.namespace;
 const line = (text, x, y, width = 240) => ({ text, x, y, width, height: 11, fontSize: 11, bold: false });
 test('two-column text remains in distinct regions', () => {
   const regions = groupPageLines([line('Left first', 42, 100), line('Right first', 322, 100), line('Left second', 42, 114), line('Right second', 322, 114)], 612);
   assert.equal(regions.length, 2);
   assert.equal(regions[0].text, 'Left first Left second');
   assert.equal(regions[1].text, 'Right first Right second');
+});
+
+test('narrow IEEE-style gutter is detected before same-baseline spans can merge', () => {
+  const input=[];
+  for(let i=0;i<16;i++) {
+    input.push({...line(`LEFT_ONLY source paragraph line ${i}.`,50,100+i*12,250),fontSize:10,height:10});
+    input.push({...line(`RIGHT_ONLY independent evidence line ${i}.`,310,100+i*12,250),fontSize:10,height:10});
+  }
+  const gutter=detectColumnGutter(input,612);
+  assert.ok(gutter>300&&gutter<310);
+  const regions=groupPageLines(input,612);
+  assert.equal(regions.length,2);
+  assert.ok(regions.every(r=>!(r.text.includes('LEFT_ONLY')&&r.text.includes('RIGHT_ONLY'))));
+  assert.ok(regions.filter(r=>r.column==='left').every(r=>r.x+r.width<=gutter));
+  assert.ok(regions.filter(r=>r.column==='right').every(r=>r.x>=gutter));
+});
+
+test('full-width titles require direct original spanning evidence', () => {
+  const input=[];
+  for(let i=0;i<12;i++) {
+    input.push({...line('Left body text stays entirely in its own column.',50,100+i*12,250),fontSize:10,height:10});
+    input.push({...line('Right body text stays entirely in its own column.',310,100+i*12,250),fontSize:10,height:10});
+  }
+  input.push({...line('A real page-wide title with its own original text span',50,60,510),fontSize:16,height:16});
+  const regions=groupPageLines(input,612);
+  assert.equal(regions.filter(r=>r.column==='wide').length,1);
+  assert.equal(regions.filter(r=>r.column==='wide')[0].fontSize,16);
+  assert.ok(regions.filter(r=>r.column==='left'||r.column==='right').every(r=>r.width<=250));
+});
+
+test('justified sentence gaps merge inside a detected column, never across its gutter', () => {
+  const input=[];
+  for(let i=0;i<12;i++) {
+    input.push({...line('Left-side prose remains in its own column.',50,100+i*12,250),fontSize:10,height:10});
+    input.push({...line('Right-side prose remains in its own column.',310,100+i*12,250),fontSize:10,height:10});
+  }
+  input.push({...line('sentence.',310,244,45),fontSize:10,height:10});
+  input.push({...line('Next sentence starts after justified spacing.',365,244,195),fontSize:10,height:10});
+  const regions=groupPageLines(input,612);
+  const joined=regions.find(r=>r.text.includes('Next sentence'));
+  assert.ok(joined.text.includes('sentence. Next sentence'));
+  assert.equal(joined.column,'right');
+  assert.ok(regions.every(r=>!(r.text.includes('Left-side')&&r.text.includes('Right-side'))));
+});
+
+test('quantities at the start of a list continuation are ordinary body text', () => {
+  const input=[line('• Low-power operation, consuming less than',50,100,240),line('50 mW at 50 Hz PRF and less than 60 mW',64,114,226),line('at higher frame rates with a small battery.',64,128,226)];
+  const regions=groupPageLines(input,612);
+  assert.equal(regions.length,1);
+  assert.equal(regions[0].kind,'list');
+  assert.ok(regions[0].text.includes('50 mW'));
+});
+
+test('translation font sizes follow source headings, body and footnotes without independent shrinking', () => {
+  for(const size of [7,10,14,20]) {
+    const region={...line('Original source',42,100,80),fontSize:size,height:size*2,id:'r',preserve:false,lines:[]};
+    const fit=fitRegionText('很长的译文'.repeat(20),region,(text,font)=>text.length*font);
+    assert.equal(fit.fontSize,size);
+    assert.equal(fit.overflow,true);
+  }
 });
 
 test('inline colored links, font changes and indents remain one readable paragraph', () => {

@@ -64,105 +64,125 @@ function isFormula(text: string) {
     || (/[=∑∫√≤≥]/.test(text) && (text.match(/[a-zA-Z]{3,}/g) ?? []).length < 3);
 }
 
-/** Rebuild semantic paragraphs; inline links and font changes never split a line. */
+/** Find a repeatedly empty vertical gutter before combining any text spans. */
+export function detectColumnGutter(input: PageLine[], pageWidth: number): number | null {
+  const bodySize = median(input.filter((line) => line.text.length > 25).map((line) => line.fontSize));
+  const body = input.filter((line) => line.fontSize >= bodySize * .7 && line.fontSize <= bodySize * 1.25 && line.width < pageWidth * .7);
+  const rows = new Set(body.map((line) => Math.round(line.y / (bodySize * .6))));
+  if (rows.size < 8) return null;
+  const from = Math.floor(pageWidth * .35), to = Math.ceil(pageWidth * .65);
+  const coverage: number[] = [];
+  for (let x = from; x <= to; x++) {
+    coverage.push(new Set(body.filter((line) => line.x < x && line.x + line.width > x)
+      .map((line) => Math.round(line.y / (bodySize * .6)))).size);
+  }
+  const minimum = Math.min(...coverage), maximum = Math.max(...coverage);
+  if (maximum === 0 || minimum > maximum * .4) return null;
+  const threshold = minimum + Math.max(1, rows.size * .025);
+  const candidates: Array<{ x: number; width: number; support: number }> = [];
+  for (let i = 0; i < coverage.length; i++) {
+    if (coverage[i] > threshold) continue;
+    const begin = i;
+    while (i + 1 < coverage.length && coverage[i + 1] <= threshold) i++;
+    if (i - begin < 2) continue;
+    const x = from + (begin + i) / 2;
+    const left = new Set(body.filter((line) => line.x < x - bodySize * 4 && line.x + line.width <= x)
+      .map((line) => Math.round(line.y / (bodySize * .6)))).size;
+    const right = new Set(body.filter((line) => line.x >= x && line.x <= x + bodySize * 3)
+      .map((line) => Math.round(line.y / (bodySize * .6)))).size;
+    if (left >= Math.max(3, rows.size * .18) && right >= Math.max(3, rows.size * .18)) candidates.push({ x, width: i - begin, support: Math.min(left, right) });
+  }
+  return candidates.sort((a, b) => b.support - a.support || Math.abs(a.x - pageWidth / 2) - Math.abs(b.x - pageWidth / 2))[0]?.x ?? null;
+}
+
+/** Conservative v3: isolate columns first, then join only geometrically compatible runs. */
 export function groupPageLines(input: PageLine[], pageWidth: number): PageRegion[] {
-  const bodySize = median(input.filter((line) => line.text.length > 35).map((line) => line.fontSize));
+  const bodySize = median(input.filter((line) => line.text.length > 25).map((line) => line.fontSize));
+  const gutter = detectColumnGutter(input, pageWidth);
   const rows: Array<{ y: number; items: PageLine[] }> = [];
   for (const item of [...input].sort((a, b) => a.y - b.y || a.x - b.x)) {
-    const row = rows.slice(-3).find((row) => Math.abs(row.y - item.y) < Math.max(bodySize, item.fontSize) * .4);
+    const row = rows.slice(-3).find((row) => Math.abs(row.y - item.y) < Math.min(bodySize, item.fontSize) * .35);
     if (row) row.items.push(item);
     else rows.push({ y: item.y, items: [item] });
   }
-  const lines: PageLine[] = [];
+  const lanes = new Map<string, PageLine[]>();
   for (const row of rows) {
+    // Full-width status must be proved by an original text span, never by a
+    // merged line or a nearby wide line. Adjacent columns must stay independent.
+    const provenWide = gutter !== null && row.items.some((item) => item.x < gutter && item.x + item.width > gutter);
     let current: PageLine | null = null;
+    let currentLane = "";
     for (const item of row.items.sort((a, b) => a.x - b.x)) {
+      const lane = provenWide ? "wide" : gutter === null ? "single" : item.x + item.width / 2 < gutter ? "left" : "right";
       const gap = current ? item.x - current.x - current.width : Infinity;
-      if (current && gap >= -2 && gap < Math.max(12, bodySize * 1.45)) {
-        const separator = gap > 1 && !/[\s-]$/.test(current.text) && !/^[,.;:!?，。；：！？、)\]]/.test(item.text) ? " " : "";
+      const similarSize = current && Math.abs(current.fontSize - item.fontSize) <= Math.max(.35, item.fontSize * .035);
+      // Justified prose can contain a large sentence space. It is safe to join
+      // across that space only after the two page columns have been isolated.
+      const inlineGap = lane === "left" || lane === "right" ? bodySize * 1.5 : Math.max(5, bodySize * .9);
+      if (current && lane === currentLane && similarSize && gap >= -1.5 && gap < inlineGap) {
+        const separator = gap > .8 && !/[\s-]$/.test(current.text) && !/^[,.;:!?，。；：！？、)\]]/.test(item.text) ? " " : "";
         current.text += separator + item.text;
         current.width = Math.max(current.width, item.x + item.width - current.x);
-        current.y = Math.min(current.y, item.y);
-        current.height = Math.max(current.height, item.y + item.height - current.y);
-        // Tiny citation superscripts do not dictate the paragraph font.
-        current.fontSize = Math.max(current.fontSize, item.fontSize);
+        current.height = Math.max(current.height, item.height);
       } else {
         current = { ...item };
-        lines.push(current);
+        currentLane = lane;
+        const lines = lanes.get(lane) ?? [];
+        lines.push(current); lanes.set(lane, lines);
       }
     }
   }
-  const anchors: Array<{ x: number; ends: number[]; count: number }> = [];
-  for (const line of lines) {
-    if (line.width < pageWidth * .17 || line.width > pageWidth * .66 || line.text.length < 24 || line.fontSize > bodySize * 1.25) continue;
-    const anchor = anchors.find((anchor) => Math.abs(anchor.x - line.x) <= bodySize * 1.9);
-    if (anchor) { anchor.x = Math.min(anchor.x, line.x); anchor.ends.push(line.x + line.width); anchor.count++; }
-    else anchors.push({ x: line.x, ends: [line.x + line.width], count: 1 });
-  }
-  const columns = anchors.filter((a) => a.count >= 2).sort((a, b) => a.x - b.x)
-    .filter((a, i, all) => !all.slice(0, i).some((b) => Math.abs(a.x - b.x) < pageWidth * .2))
-    .map((a, i, all) => ({ x: a.x, right: Math.min(Math.max(...a.ends), all[i + 1]?.x - bodySize * 1.4 || pageWidth), key: `col-${i}` }));
-  const wideLines = lines.filter((line) => line.width > pageWidth * .66);
-  const geometry = (line: PageLine) => {
-    const wide = wideLines.filter((w) => Math.abs(w.y - line.y) < bodySize * 1.75
-      && line.x >= w.x - bodySize * 1.5 && line.x + line.width <= w.x + w.width + bodySize * 1.5);
-    if (wide.length) {
-      const x = Math.min(...wide.map((w) => w.x));
-      return { x, right: Math.max(...wide.map((w) => w.x + w.width)), key: `wide-${Math.round(x / (bodySize * 2))}` };
-    }
-    const column = columns.find((c) => line.x >= c.x - bodySize * .7 && line.x < c.right
-      && line.x + line.width <= c.right + bodySize * .9);
-    return column ?? { x: line.x, right: line.x + line.width, key: `local-${Math.round(line.x / bodySize)}-${Math.round((line.x + line.width) / (bodySize * 2))}` };
-  };
   const classify = (line: PageLine): NonNullable<PageRegion["kind"]> => {
     if (isFormula(line.text)) return "equation";
     if (/^(?:[•●▪‣◦]|[-–]\s|\(?\d+[)．]\s)/.test(line.text.trim())) return "list";
     if (/^(?:Fig(?:ure)?\.?|Table|图|表)\s*\d/i.test(line.text.trim())) return "caption";
-    if (line.fontSize > bodySize * 1.25 || (line.text.length < 100 && /^(?:[IVX]+\.?\s+|\d+(?:\.\d+)*\.?\s+|[A-Z]\.\s+|Abstract\b|References\b|Highlights\b|Keywords\b|摘要|关键词)/.test(line.text.trim()))) return "heading";
     if (!/[a-zA-Z\u3400-\u9fff]{2}/.test(line.text)) return "label";
+    if (line.fontSize > bodySize * 1.25 || (line.text.length < 100 && /^(?:[IVX]+\.?\s+|\d+(?:\.\d+)*\.\s+|\d+(?:\.\d+)+\s+|[A-Z]\.\s+|Abstract\b|References\b|Highlights\b|Keywords\b|摘要|关键词)/.test(line.text.trim()))) return "heading";
     return "paragraph";
   };
   const regions: PageRegion[] = [];
-  const lastByColumn = new Map<string, PageRegion>();
-  for (const line of lines.sort((a, b) => a.y - b.y || a.x - b.x)) {
-    const lane = geometry(line);
-    const kind = classify(line);
-    const previous = lastByColumn.get(lane.key);
-    const last = previous?.lines.at(-1);
-    const gap = last ? line.y - last.y - last.height : Infinity;
-    const sameTextStyle = previous && Math.abs(previous.fontSize - line.fontSize) < bodySize * .25;
-    const indentedNewParagraph = previous?.kind === "paragraph" && last
-      && line.x > lane.x + bodySize * .65 && last.x < lane.x + bodySize * .45;
-    const shortPrevious = last && last.width < (lane.right - lane.x) * .66;
-    const listContinuation = previous?.kind === "list" && kind === "paragraph" && line.x >= previous.x + bodySize * .5;
-    const continues = previous && last && sameTextStyle && gap >= -1 && gap < bodySize * .65
-      && !shortPrevious && !indentedNewParagraph
-      && ((previous.kind === "paragraph" && kind === "paragraph") || listContinuation || (previous.kind === "caption" && kind === "paragraph"));
-    if (continues) {
-      previous.lines.push(line);
-      previous.text = /[A-Za-z]-$/.test(previous.text) && /^[a-z]/.test(line.text) ? previous.text.slice(0, -1) + line.text : `${previous.text} ${line.text}`;
-      const oldX = previous.x;
-      previous.x = Math.min(previous.x, line.x);
-      previous.width = Math.max(oldX + previous.width, line.x + line.width, lane.right) - previous.x;
-      previous.height = line.y + line.height - previous.y;
-      previous.textIndent = Math.max(0, previous.lines[0].x - previous.x);
-    } else {
-      const marker = kind === "list" ? line.text.trim().match(/^(?:[•●▪‣◦]|[-–]|\(?\d+[)．])/u)?.[0] : undefined;
-      const region: PageRegion = { ...line, id: `region-${regions.length}`, kind, column: lane.key,
-        width: kind === "paragraph" || kind === "list" ? Math.max(line.width, lane.right - line.x) : line.width,
-        bold: kind === "heading", color: kind === "heading" ? "#254b6d" : "#27313c",
-        marker, textIndent: 0,
-        preserve: kind === "label" || kind === "equation" || /^(?:https?:\/\/|doi\s*:|\S+@\S+)/i.test(line.text.trim()), lines: [line] };
-      regions.push(region); lastByColumn.set(lane.key, region);
+  for (const [column, lines] of lanes) {
+    const columnLeft = Math.min(...lines.map((line) => line.x));
+    const laneRegions: PageRegion[] = [];
+    for (const line of lines.sort((a, b) => a.y - b.y || a.x - b.x)) {
+      const kind = classify(line);
+      let previous = [...laneRegions].reverse().find((region) => {
+        const last = region.lines.at(-1)!;
+        return last.y <= line.y + .8 && Math.abs(line.x - last.x) < bodySize * 1.5;
+      });
+      const last = previous?.lines.at(-1);
+      const gap = last ? line.y - last.y - last.height : Infinity;
+      const sameSize = previous && Math.abs(previous.fontSize - line.fontSize) < .4;
+      const newIndent = previous?.kind === "paragraph" && last && line.x > columnLeft + bodySize * .6 && last.x < columnLeft + bodySize * .4;
+      const shortLast = last && previous && last.width < previous.width * .65;
+      const listContinuation = previous?.kind === "list" && kind === "paragraph" && line.x >= previous.x + bodySize * .45;
+      const continues = previous && last && sameSize && gap >= -.8 && gap < bodySize * .65
+        && Math.abs(line.x - last.x) < bodySize * 1.5 && !newIndent && !shortLast
+        && ((previous.kind === "paragraph" && kind === "paragraph") || listContinuation || (previous.kind === "caption" && kind === "paragraph"));
+      if (continues) {
+        previous.lines.push(line);
+        previous.text = /[A-Za-z]-$/.test(previous.text) && /^[a-z]/.test(line.text) ? previous.text.slice(0, -1) + line.text : previous.text + " " + line.text;
+        const right = Math.max(previous.x + previous.width, line.x + line.width);
+        previous.x = Math.min(previous.x, line.x);
+        previous.width = right - previous.x;
+        previous.height = line.y + line.height - previous.y;
+        previous.textIndent = Math.max(0, previous.lines[0].x - previous.x);
+      } else {
+        previous = { ...line, id: "", kind, column, fontSize: line.fontSize,
+          bold: kind === "heading" || line.bold, color: kind === "heading" ? "#254b6d" : "#27313c",
+          marker: kind === "list" ? line.text.trim().match(/^(?:[•●▪‣◦]|[-–]|\(?\d+[)．])/u)?.[0] : undefined,
+          textIndent: 0,
+          preserve: kind === "label" || kind === "equation" || /^(?:https?:\/\/|doi\s*:|\S+@\S+)/i.test(line.text.trim()), lines: [line] };
+        regions.push(previous); laneRegions.push(previous);
+      }
     }
   }
-  return regions;
+  return regions.sort((a, b) => a.y - b.y || a.x - b.x).map((region, index) => ({ ...region, id: "region-" + index }));
 }
 
 export function fitRegionText(text: string, region: PageRegion, measure: (text: string, fontSize: number) => number) {
-  const kind = region.kind ?? "paragraph";
-  const isBody = kind === "paragraph" || kind === "list";
-  const leading = isBody ? 1.42 : kind === "caption" ? 1.3 : 1.22;
+  const sourceSteps = region.lines.slice(1).map((line, index) => (line.y - region.lines[index].y) / region.fontSize).filter((step) => step > 1 && step < 1.8);
+  const leading = sourceSteps.length ? Math.min(1.5, Math.max(1.1, median(sourceSteps))) : 1.2;
   const marker = region.marker;
   const content = text.replace(/\r\n?/g, "\n").replace(/[\t ]+/g, " ").trim()
     .replace(marker ? /^\s*(?:[•●▪‣◦]|[-–*]|\(?\d+[)．])\s*/u : /$^/, "");
@@ -194,13 +214,11 @@ export function fitRegionText(text: string, region: PageRegion, measure: (text: 
     }
     return output;
   };
-  let size = region.fontSize;
-  const minimum = Math.max(5, region.fontSize * .72);
-  let lines = wrap(size);
-  const availableHeight = region.height + region.fontSize * .18;
-  while (size > minimum && lines.length * size * leading > availableHeight) {
-    size = Math.max(minimum, size - .25); lines = wrap(size);
-  }
+  // Source typography is authoritative. Do not shrink unrelated fragments to
+  // different sizes just to make an overflowing translation fit its rectangle.
+  const size = region.fontSize;
+  const lines = wrap(size);
+  const availableHeight = region.height + region.fontSize * .25;
   return { fontSize: size, lines, lineHeight: size * leading, hangingIndent: marker ? size * 1.35 : 0,
     overflow: lines.length * size * leading > availableHeight };
 }

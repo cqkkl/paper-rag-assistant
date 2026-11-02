@@ -51,6 +51,7 @@ export interface ILayoutTranslationCache {
   sourceKey: string;
   regions: Record<string, string>;
   previous?: { version: number; sourceKey: string; regions: Record<string, string> };
+  history?: Array<{ version: number; sourceKey: string; regions: Record<string, string> }>;
 }
 
 // 文献类型定义

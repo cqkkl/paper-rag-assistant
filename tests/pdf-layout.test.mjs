@@ -7,8 +7,38 @@ import ts from 'typescript';
 const source = await readFile(new URL('../src/lib/pdfLayout.ts', import.meta.url), 'utf8');
 const module = new vm.SourceTextModule(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText);
 await module.link(() => {}); await module.evaluate();
-const { detectColumnGutter, groupPageLines, groupPageLinesLegacy, migrateParagraphTranslations, fitRegionText } = module.namespace;
+const { detectColumnGutter, groupPageLines, groupPageLinesLegacy, migrateParagraphTranslations, fitRegionText, translationBounds } = module.namespace;
 const line = (text, x, y, width = 240) => ({ text, x, y, width, height: 11, fontSize: 11, bold: false });
+
+test('raised citations and lowered indices stay attached to their source line', () => {
+  const input = [
+    { ...line('The device records continuously', 50, 100, 140), baseline: 109 },
+    { ...line('28–30', 190, 98, 15), fontSize: 6, height: 6, baseline: 103 },
+    { ...line('. The system tracks CO', 206, 100, 102), baseline: 109 },
+    { ...line('2', 308, 107, 3), fontSize: 6, height: 6, baseline: 112 },
+    { ...line('450', 380, 100, 12), fontSize: 7, height: 7, baseline: 107 },
+  ];
+  const regions = groupPageLines(input, 612);
+  assert.equal(regions.length, 2);
+  assert.equal(regions[0].text, 'The device records continuously⟦sup:28–30⟧. The system tracks CO⟦sub:2⟧');
+  assert.equal(regions[0].lines[0].scripts.length, 2);
+  assert.equal(regions[1].preserve, true);
+  const fit = fitRegionText('持续⟦sup:28–30⟧监测', { ...regions[0], width: 40 }, (text, size) => text.length * size);
+  assert.ok(fit.lines.includes('续⟦sup:28–30⟧'));
+  assert.ok(!fit.lines.some((text) => text.startsWith('⟦')));
+});
+
+test('overlapping source rectangles reserve space and display only whole lines at source font size', () => {
+  const region = { ...line('Caption', 50, 100, 200), id: 'first', height: 40, preserve: false, lines: [] };
+  const next = { ...region, id: 'next', x: 60, y: 127 };
+  const sameRow = { ...region, id: 'side', x: 240, height: 11 };
+  const bounds = translationBounds([region, next, sameRow]);
+  assert.deepEqual([bounds[0].width, bounds[0].height], [190, 27]);
+  const fit = fitRegionText('较长的中文译文'.repeat(12), region, (text, size) => text.length * size, bounds[0]);
+  assert.equal(fit.visibleLines.length, 2);
+  assert.equal(fit.fontSize, region.fontSize);
+  assert.ok(fit.overflow);
+});
 test('two-column text remains in distinct regions', () => {
   const regions = groupPageLines([line('Left first', 42, 100), line('Right first', 322, 100), line('Left second', 42, 114), line('Right second', 322, 114)], 612);
   assert.equal(regions.length, 2);

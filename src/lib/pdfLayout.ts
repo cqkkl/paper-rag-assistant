@@ -1,6 +1,8 @@
 export interface PageLine {
   text: string; x: number; y: number; width: number; height: number; fontSize: number; bold: boolean;
   background?: string; color?: string;
+  baseline?: number;
+  scripts?: PageLine[];
 }
 export interface PageRegion {
   id: string; text: string; x: number; y: number; width: number; height: number;
@@ -95,12 +97,56 @@ export function detectColumnGutter(input: PageLine[], pageWidth: number): number
   return candidates.sort((a, b) => b.support - a.support || Math.abs(a.x - pageWidth / 2) - Math.abs(b.x - pageWidth / 2))[0]?.x ?? null;
 }
 
-/** Conservative v3: isolate columns first, then join only geometrically compatible runs. */
+export function inlineScripts(text: string) {
+  return [...text.matchAll(/⟦(sup|sub):([^⟦⟧]+)⟧/gu)];
+}
+
+export function preservesInlineScripts(source: string, translation: string) {
+  const tokens = (text: string) => inlineScripts(text).map((match) => match[0]).sort().join("");
+  return tokens(source) === tokens(translation);
+}
+
+/** Attach small, displaced glyphs only to adjacent text in the same column. */
+function attachScripts(input: PageLine[], gutter: number | null) {
+  const attached = new Map<PageLine, { mark: PageLine; token: string }[]>();
+  const used = new Set<PageLine>();
+  const baseline = (line: PageLine) => line.baseline ?? line.y + line.fontSize * .8;
+  for (const mark of [...input].sort((a, b) => a.x - b.x)) {
+    if (!/^[\da-zA-Z*†‡,–−-]{1,16}$/u.test(mark.text.replace(/\s/g, ""))) continue;
+    let best: { host: PageLine; distance: number; shift: number } | undefined;
+    for (const host of input) {
+      if (!/[\p{L}\d)\]]/u.test(host.text) || mark.fontSize > host.fontSize * .84 || mark.fontSize < host.fontSize * .43) continue;
+      if (gutter !== null && (mark.x >= gutter) !== (host.x >= gutter)) continue;
+      const preceding = attached.get(host)?.at(-1)?.mark;
+      const right = preceding && Math.abs(baseline(preceding) - baseline(mark)) < mark.fontSize * .2
+        ? preceding.x + preceding.width : host.x + host.width;
+      const gap = mark.x - right;
+      const shift = (baseline(host) - baseline(mark)) / host.fontSize;
+      if (gap < -host.fontSize * .2 || gap > host.fontSize * .4 || Math.abs(shift) < .13 || shift > .75 || shift < -.36) continue;
+      const distance = Math.abs(gap) / host.fontSize + Math.abs(Math.abs(shift) - .3);
+      if (!best || distance < best.distance) best = { host, distance, shift };
+    }
+    if (best) {
+      const marks = attached.get(best.host) ?? [];
+      marks.push({ mark, token: `⟦${best.shift > 0 ? "sup" : "sub"}:${mark.text.trim()}⟧` });
+      attached.set(best.host, marks);
+      used.add(mark);
+    }
+  }
+  return input.filter((line) => !used.has(line) || attached.has(line)).map((line) => {
+    const marks = attached.get(line)?.sort((a, b) => a.mark.x - b.mark.x);
+    if (!marks) return line;
+    return { ...line, text: line.text.trimEnd() + marks.map(({ token }) => token).join("") + (line.text.match(/\s+$/u)?.[0] ?? ""),
+      width: Math.max(line.width, ...marks.map(({ mark }) => mark.x + mark.width - line.x)), scripts: marks.map(({ mark }) => mark) };
+  });
+}
+
+/** Isolate columns first, then join only geometrically compatible runs. */
 export function groupPageLines(input: PageLine[], pageWidth: number): PageRegion[] {
   const bodySize = median(input.filter((line) => line.text.length > 25).map((line) => line.fontSize));
   const gutter = detectColumnGutter(input, pageWidth);
   const rows: Array<{ y: number; items: PageLine[] }> = [];
-  for (const item of [...input].sort((a, b) => a.y - b.y || a.x - b.x)) {
+  for (const item of attachScripts(input, gutter).sort((a, b) => a.y - b.y || a.x - b.x)) {
     const row = rows.slice(-3).find((row) => Math.abs(row.y - item.y) < Math.min(bodySize, item.fontSize) * .35);
     if (row) row.items.push(item);
     else rows.push({ y: item.y, items: [item] });
@@ -124,6 +170,7 @@ export function groupPageLines(input: PageLine[], pageWidth: number): PageRegion
         current.text += separator + item.text;
         current.width = Math.max(current.width, item.x + item.width - current.x);
         current.height = Math.max(current.height, item.height);
+        if (item.scripts?.length) current.scripts = [...(current.scripts ?? []), ...item.scripts];
       } else {
         current = { ...item };
         currentLane = lane;
@@ -180,7 +227,33 @@ export function groupPageLines(input: PageLine[], pageWidth: number): PageRegion
   return regions.sort((a, b) => a.y - b.y || a.x - b.x).map((region, index) => ({ ...region, id: "region-" + index }));
 }
 
-export function fitRegionText(text: string, region: PageRegion, measure: (text: string, fontSize: number) => number) {
+/** Reserve the next source region's space before drawing any translated ink. */
+export function translationBounds(regions: PageRegion[]) {
+  return regions.map((region, i) => {
+    let width = region.width;
+    let height = region.height + region.fontSize * .25;
+    for (const [j, other] of regions.entries()) {
+      if (i === j || other.x >= region.x + region.width || other.x + other.width <= region.x) continue;
+      if (other.y > region.y + .5) height = Math.min(height, other.y - region.y);
+      else if (other.y + other.height > region.y && (Math.abs(other.y - region.y) <= .5 || other.preserve)) {
+        if (other.x > region.x) width = Math.min(width, other.x - region.x);
+        else if (other.preserve || (other.x === region.x && Math.abs(other.y - region.y) <= .5 && j < i)) width = 0;
+      }
+    }
+    return { width, height };
+  });
+}
+
+export function fitRegionText(text: string, region: PageRegion, measureText: (text: string, fontSize: number) => number,
+  bounds = { width: region.width, height: region.height + region.fontSize * .25 }) {
+  const measure = (value: string, size: number) => {
+    let offset = 0, width = 0;
+    for (const match of inlineScripts(value)) {
+      width += measureText(value.slice(offset, match.index), size) + measureText(match[2], size * .65);
+      offset = match.index + match[0].length;
+    }
+    return width + measureText(value.slice(offset), size);
+  };
   const sourceSteps = region.lines.slice(1).map((line, index) => (line.y - region.lines[index].y) / region.fontSize).filter((step) => step > 1 && step < 1.8);
   const leading = sourceSteps.length ? Math.min(1.5, Math.max(1.1, median(sourceSteps))) : 1.2;
   const marker = region.marker;
@@ -191,20 +264,24 @@ export function fitRegionText(text: string, region: PageRegion, measure: (text: 
     const hangingIndent = marker ? size * 1.35 : 0;
     for (const paragraph of content.split(/\n+/)) {
       let line = "";
-      const lineWidth = () => region.width - hangingIndent - (output.length === 0 && !marker ? region.textIndent ?? 0 : 0);
+      const lineWidth = () => bounds.width - hangingIndent - (output.length === 0 && !marker ? region.textIndent ?? 0 : 0);
       // Use words for Latin text; CJK characters may wrap individually.
-      const tokens = paragraph.match(/[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*\s*|[^A-Za-z0-9]/gu) ?? [];
+      const tokens: string[] = [];
+      for (const part of paragraph.match(/⟦(?:sup|sub):[^⟦⟧]+⟧|[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*\s*|[^A-Za-z0-9]/gu) ?? []) {
+        if (part.startsWith("⟦") && tokens.length) tokens[tokens.length - 1] = tokens.at(-1)!.trimEnd() + part;
+        else tokens.push(part);
+      }
       for (const token of tokens) {
         if (line && measure(line + token, size) > lineWidth()) {
           // Do not leave Chinese closing punctuation alone at the start of a line.
-          if (/^[，。；：！？、）】》]/.test(token)) {
+          if (/^[，。；：！？、）】》]/.test(token) && !line.endsWith("⟧") && [...line].length > 1) {
             const chars = [...line];
             const last = chars.pop()!;
             output.push(chars.join("").trimEnd()); line = last;
           } else { output.push(line.trimEnd()); line = ""; }
         }
         if (measure(token, size) > lineWidth()) {
-          for (const char of token) {
+          for (const char of token.match(/[^⟦](?:⟦(?:sup|sub):[^⟦⟧]+⟧)+|⟦(?:sup|sub):[^⟦⟧]+⟧|./gu) ?? []) {
             if (line && measure(line + char, size) > lineWidth()) { output.push(line); line = ""; }
             line += char;
           }
@@ -218,9 +295,13 @@ export function fitRegionText(text: string, region: PageRegion, measure: (text: 
   // different sizes just to make an overflowing translation fit its rectangle.
   const size = region.fontSize;
   const lines = wrap(size);
-  const availableHeight = region.height + region.fontSize * .25;
-  return { fontSize: size, lines, lineHeight: size * leading, hangingIndent: marker ? size * 1.35 : 0,
-    overflow: lines.length * size * leading > availableHeight };
+  const lineHeight = size * leading;
+  const hangingIndent = marker ? size * 1.35 : 0;
+  const firstTooWide = lines.findIndex((line, index) => measure(line, size) + hangingIndent
+    + (index === 0 && !marker ? region.textIndent ?? 0 : 0) > bounds.width + .001);
+  const visibleLines = bounds.width > 0
+    ? lines.slice(0, Math.min(firstTooWide < 0 ? lines.length : firstTooWide, Math.floor((bounds.height + .001) / lineHeight))) : [];
+  return { fontSize: size, lines, lineHeight, hangingIndent, visibleLines, overflow: visibleLines.length < lines.length };
 }
 
 /** Carry complete old fragments into their new paragraph, never duplicate them. */

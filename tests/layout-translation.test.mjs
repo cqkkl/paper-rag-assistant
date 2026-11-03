@@ -16,10 +16,24 @@ async function load(file, dependencies) {
 }
 async function engine(callDeepSeek) {
   const { splitTranslationText } = await load('translation', { './deepseek': { callDeepSeek } });
-  return load('layoutTranslation', { './deepseek': { callDeepSeek }, './translation': { splitTranslationText } });
+  const { preservesInlineScripts } = await load('pdfLayout');
+  return load('layoutTranslation', { './deepseek': { callDeepSeek }, './translation': { splitTranslationText }, './pdfLayout': { preservesInlineScripts } });
 }
 const regions = (count) => Array.from({length:count},(_,i)=>({id:`region-${i}`,text:`Academic source paragraph ${i}.`,preserve:false}));
 const signal = () => new AbortController().signal;
+
+test('a response that drops an inline citation is repaired before it can replace the PDF text', async () => {
+  const published = [];
+  let repaired = 0;
+  const { translateRegions } = await engine(async (_messages, _onChunk, _signal, options) => {
+    if (options.json) return '{"region-0":"持续监测。"}';
+    repaired++;
+    return '持续监测⟦sup:27⟧。';
+  });
+  await translateRegions([{ id: 'region-0', text: 'Monitor continuously⟦sup:27⟧.', preserve: false }], '', signal(), (values) => published.push(values['region-0']));
+  assert.equal(repaired, 1);
+  assert.deepEqual([...new Set(published.filter(Boolean))], ['持续监测⟦sup:27⟧。']);
+});
 
 test('37-region page: omitted IDs are auto-repaired, valid regions publish immediately', async () => {
   let structured=0, fallbacks=0;

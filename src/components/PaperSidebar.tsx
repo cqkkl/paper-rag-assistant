@@ -299,7 +299,7 @@ export default function PaperSidebar({ mobile = false, onNavigate }: PaperSideba
                     type="button"
                     variant="ghost"
                     size="icon"
-                    className="h-8 w-8 shrink-0 text-muted-foreground opacity-100 hover:text-destructive md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100"
+                    className="h-8 w-8 shrink-0 text-muted-foreground/60 hover:text-destructive"
                     aria-label={`删除 ${paper.name}`}
                     onClick={() => setDeleteCandidate(paper)}
                   >

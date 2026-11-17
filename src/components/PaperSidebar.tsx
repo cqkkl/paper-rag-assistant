@@ -9,7 +9,6 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -243,7 +242,7 @@ export default function PaperSidebar({ mobile = false, onNavigate }: PaperSideba
       <div className="mx-4 border-t border-sidebar-border" />
       <div className="flex min-h-0 flex-1 flex-col px-3 py-3">
         <p className="mb-2 px-2 text-xs font-medium text-sidebar-foreground/60">文献库 ({papers.length})</p>
-        <ScrollArea className="min-h-0 flex-1">
+        <div className="min-h-0 flex-1 overflow-y-auto">
           {isHydrating ? (
             <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />正在恢复本地文献…
@@ -309,7 +308,7 @@ export default function PaperSidebar({ mobile = false, onNavigate }: PaperSideba
               ))}
             </div>
           )}
-        </ScrollArea>
+        </div>
       </div>
 
       <div className="space-y-2 border-t border-sidebar-border px-4 py-3">

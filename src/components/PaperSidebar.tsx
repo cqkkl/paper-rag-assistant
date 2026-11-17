@@ -298,11 +298,11 @@ export default function PaperSidebar({ mobile = false, onNavigate }: PaperSideba
                     type="button"
                     variant="ghost"
                     size="icon"
-                    className="h-8 w-8 shrink-0 text-muted-foreground/60 hover:text-destructive"
+                    className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
                     aria-label={`删除 ${paper.name}`}
                     onClick={() => setDeleteCandidate(paper)}
                   >
-                    <Trash2 className="h-3.5 w-3.5" />
+                    <Trash2 className="h-4 w-4" />
                   </Button>
                 </div>
               ))}
